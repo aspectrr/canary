@@ -17,6 +17,8 @@ const LOADING_STEPS = [
   "Checking install scripts…",
   "Hunting for hidden or obfuscated code…",
   "Looking for secrets and sketchy endpoints…",
+  "Checking dependencies for known vulnerabilities…",
+  "Reviewing recent issue reports…",
   "Writing your plain-English report…",
 ];
 
@@ -33,7 +35,7 @@ export function InvestigatorForm() {
   useEffect(() => {
     if (status !== "loading") return;
     setStep(0);
-    const id = setInterval(() => setStep((s) => (s + 1) % LOADING_STEPS.length), 1900);
+    const id = setInterval(() => setStep((s) => (s + 1) % LOADING_STEPS.length), 2400);
     return () => clearInterval(id);
   }, [status]);
 
@@ -148,6 +150,12 @@ export function InvestigatorForm() {
 }
 
 function LoadingState({ step, repo }: { step: number; repo: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t0 = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 500);
+    return () => clearInterval(id);
+  }, []);
   return (
     <div className="mx-auto mt-10 max-w-2xl text-center">
       <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-zinc-300 border-t-sky-600 dark:border-zinc-700 dark:border-t-sky-400" />
@@ -155,7 +163,13 @@ function LoadingState({ step, repo }: { step: number; repo: string }) {
       <p className="mt-1 text-[15px] text-zinc-700 transition-all dark:text-zinc-300">
         {LOADING_STEPS[step]}
       </p>
-      <p className="mt-3 text-xs text-zinc-400">This usually takes 5–20 seconds.</p>
+      <p className="mt-3 text-xs text-zinc-400">
+        {elapsed < 3
+          ? "This usually takes 5–20 seconds."
+          : elapsed < 25
+            ? `${elapsed}s… still working — scanning dozens of files.`
+            : `${elapsed}s… the AI is writing your report now. This can take up to a minute.`}
+      </p>
     </div>
   );
 }

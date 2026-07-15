@@ -2,8 +2,10 @@ import { GitHubError } from "@/lib/github";
 import { investigate, UserInputError } from "@/lib/investigate";
 import type { ApiError } from "@/lib/types";
 
-// Allow up to 60s for the scan + synthesis (filed server-side).
-export const maxDuration = 60;
+// Allow generous time for scan + AI synthesis. Slower models (e.g. Kimi k2.5)
+// can take 60-75s for the model call alone; GitHub/OSV/issues intake adds more.
+// Set higher than the model timeout (OPENROUTER_TIMEOUT_MS, default 120s).
+export const maxDuration = 180;
 // Always run at request time — never cached.
 export const dynamic = "force-dynamic";
 

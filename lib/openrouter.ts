@@ -58,18 +58,19 @@ function headers(): Record<string, string> {
   return h;
 }
 
-interface ChatCompletionResponse {
-  choices?: { message?: { content?: string | null } }[];
-  error?: { message?: string };
-}
-
 /**
- * Request a chat completion and return the assistant text. Returns null on any
- * failure (caller decides whether to retry or fall back).
+ * Request a chat completion via streaming and return the accumulated text.
+ *
+ * Uses stream:true so the connection stays alive as long as the model is
+ * actively producing tokens. The timeout is a STALL detector (abort if no
+ * data arrives for `stallMs`), not a hard total cap — so slow models like
+ * Kimi k2.5 (which varies from 56s to 120s+) won't get cut off mid-generation.
+ *
+ * Returns null on any failure (caller falls back to deterministic report).
  */
 export async function complete(
   opts: CompletionOptions,
-  timeoutMs = 45_000,
+  stallMs = Number(process.env.OPENROUTER_TIMEOUT_MS) || 120_000,
 ): Promise<string | null> {
   const base = process.env.OPENROUTER_BASE_URL ?? DEFAULT_BASE;
   const body: Record<string, unknown> = {
@@ -77,11 +78,17 @@ export async function complete(
     messages: opts.messages,
     max_tokens: opts.maxTokens ?? 2048,
     temperature: opts.temperature ?? 0.2,
+    stream: true,
   };
   if (opts.responseFormat) body.response_format = opts.responseFormat;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), stallMs);
+  const resetTimer = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), stallMs);
+  };
+
   try {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
@@ -91,10 +98,42 @@ export async function complete(
     });
 
     if (!res.ok) return null;
-    const data = (await res.json()) as ChatCompletionResponse;
-    if (data.error) return null;
-    const content = data.choices?.[0]?.message?.content ?? null;
-    return typeof content === "string" ? content : null;
+    if (!res.body) return null;
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = "";
+    let buffer = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetTimer();
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]" || payload === "") continue;
+        try {
+          const chunk = JSON.parse(payload) as {
+            choices?: { delta?: { content?: string | null } }[];
+            error?: { message?: string };
+          };
+          if (chunk.error) return null;
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (typeof delta === "string") fullContent += delta;
+        } catch {
+          /* ignore partial/malformed SSE lines */
+        }
+      }
+    }
+
+    return fullContent || null;
   } catch {
     return null;
   } finally {
@@ -103,23 +142,16 @@ export async function complete(
 }
 
 /**
- * Try a structured (json_schema) call first; if it fails or yields nothing
- * usable, retry with plain json_object mode (broader model support). Returns
- * the assistant text, or null if both fail.
+ * Single call in json_object mode (universally supported by every model on
+ * OpenRouter). We validate the structure ourselves, so json_schema enforcement
+ * is redundant — and trying json_schema first then falling back doubles latency,
+ * which breaks slow models (e.g. Kimi k2.5 needs ~56s for a full report).
  */
 export async function completeJson(
   messages: ChatMessage[],
-  schema: { name: string; schema: object },
+  _schema: { name: string; schema: object },
   maxTokens?: number,
 ): Promise<string | null> {
-  const strict = await complete({
-    messages,
-    responseFormat: { type: "json_schema", json_schema: { name: schema.name, strict: false, schema: schema.schema } },
-    maxTokens,
-  });
-  if (strict && strict.trim()) return strict;
-
-  // Broader fallback — schema is described in the prompt instead.
   return complete({
     messages,
     responseFormat: { type: "json_object" },

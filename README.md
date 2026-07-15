@@ -45,7 +45,8 @@ Create a `.env.local` file (gitignored) in the project root:
 | Variable                | Required | What it does                                                                 |
 | ----------------------- | -------- | ---------------------------------------------------------------------------- |
 | `OPENROUTER_API_KEY`    | no       | When set, the full report is authored by an AI model via OpenRouter. When unset, rules-only reports. |
-| `OPENROUTER_MODEL`      | no       | Model to use. Default `anthropic/claude-sonnet-4.5`. Any OpenRouter model id; structured-output support recommended. |
+| `OPENROUTER_MODEL`      | no       | Model to use. Default `anthropic/claude-sonnet-4.5`. Any OpenRouter model id. |
+| `OPENROUTER_TIMEOUT_MS` | no       | Stall timeout for the streaming model call (default `120000` = 2 min). Increase for very slow models. |
 | `OPENROUTER_BASE_URL`   | no       | Default `https://openrouter.ai/api/v1`. Override for a compatible gateway.   |
 | `OPENROUTER_REFERER`    | no       | Optional `HTTP-Referer` for app attribution on OpenRouter.                  |
 | `APP_TITLE`             | no       | Optional `X-Title` for app attribution on OpenRouter.                        |
@@ -62,6 +63,12 @@ GITHUB_TOKEN=github_pat_...
 
 Get an OpenRouter key at <https://openrouter.ai/keys>. A fine-grained GitHub
 token with public read-only access is enough.
+
+> **Model speed matters.** The report is generated via streaming, but total
+> time depends on the model. Claude Sonnet, GPT-4o-mini, and Mistral finish in
+> 5–15s. Large reasoning/MoE models like Kimi k2.5 can take 60–120s. The
+> streaming timeout is a *stall detector* (abort only if no tokens arrive for
+> `OPENROUTER_TIMEOUT_MS`), so even slow models won't be cut off mid-generation.
 
 ## How it works
 
