@@ -1,3 +1,4 @@
+import type { ProgressFn } from "./progress";
 import type { Grade } from "./grade";
 import { activeModel, completeJson, isConfigured, type ChatMessage } from "./openrouter";
 import { checklistForPrompt } from "./checklist";
@@ -535,7 +536,11 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
 // Public entrypoint.
 // ---------------------------------------------------------------------------
 
-export async function synthesize(scan: ScanResult, grade: Grade): Promise<Synthesis> {
+export async function synthesize(
+  scan: ScanResult,
+  grade: Grade,
+  onProgress?: ProgressFn,
+): Promise<Synthesis> {
   const kind = detectIntegration(scan.meta, scan.files);
 
   if (!isConfigured()) {
@@ -543,7 +548,17 @@ export async function synthesize(scan: ScanResult, grade: Grade): Promise<Synthe
   }
 
   const messages = buildMessages(scan, grade, kind);
-  const text = await completeJson(messages, OUTPUT_SCHEMA, 3000);
+  onProgress?.(80, "report", "Asking the AI to write your report…", activeModel());
+  let lastReportPct = 80;
+  const text = await completeJson(messages, OUTPUT_SCHEMA, 3000, (chars) => {
+    // Inch the bar from 82% to 95% as tokens stream in (~3000 char report).
+    // Only emit when the rounded percentage changes to avoid flooding the stream.
+    const pct = Math.min(95, 82 + Math.round(chars / 200));
+    if (pct !== lastReportPct) {
+      lastReportPct = pct;
+      onProgress?.(pct, "report", "AI is writing your report…", undefined);
+    }
+  });
   const raw = text ? extractJsonObject(text) : null;
   const model = validateModelOutput(raw, grade);
 

@@ -10,6 +10,7 @@ import { grade } from "./grade";
 import { synthesize, vulnsAsFindings } from "./llm";
 import { summarizeIssues } from "./issues";
 import { queryVulnerabilities } from "./osv";
+import type { ProgressFn } from "./progress";
 import {
   DOC_FILES,
   IGNORE_FILE_RE,
@@ -173,7 +174,14 @@ function findReadme(files: RepoFile[]): RepoFile | null {
   );
 }
 
-export async function investigate(input: string): Promise<Report> {
+export async function investigate(input: string, onProgress?: ProgressFn): Promise<Report> {
+  const t0 = Date.now();
+  const lap = (label: string, detail?: string): void => {
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[aspectrr] ${elapsed.padStart(6)}s  ${label}${detail ? ` — ${detail}` : ""}`);
+  };
+
+  onProgress?.(3, "resolve", "Looking up the repository…");
   const parsed = parseRepoUrl(input);
   if (!parsed) {
     throw new UserInputError(
@@ -182,13 +190,17 @@ export async function investigate(input: string): Promise<Report> {
   }
 
   const { owner, repo } = parsed;
+  console.log(`[aspectrr] ── investigating ${owner}/${repo} ──────────────`);
 
   // 1. Metadata + language breakdown.
+  onProgress?.(12, "fetch-meta", "Fetching repository details…", `${owner}/${repo}`);
   const baseMeta = await getMeta(owner, repo);
   const languages = await getLanguages(owner, repo);
   const meta: RepoMeta = { ...baseMeta, languages };
+  lap("repo metadata", `${meta.stars.toLocaleString()} stars, ${meta.primaryLanguage ?? "mixed"}`);
 
   // 2. Resolve branch — prefer URL hint, fall back to default.
+  onProgress?.(22, "file-tree", "Reading the file list…");
   let branch = parsed.branch ?? meta.defaultBranch;
   let tree = await safeTree(owner, repo, branch);
   if (!tree) {
@@ -203,14 +215,22 @@ export async function investigate(input: string): Promise<Report> {
     .filter((e) => e.type === "blob")
     .map((e) => ({ path: e.path, size: e.size }));
   const totalFilesInRepo = allPaths.length;
+  lap("file tree", `${totalFilesInRepo} files`);
 
   // 3. Flags + file selection.
   const flags = computeFlags(tree.entries.map((e) => e.path));
   const { mustFetch } = selectFiles(tree.entries);
 
   // 4. Fetch selected files.
+  onProgress?.(
+    32,
+    "fetch-files",
+    "Reading the code and README…",
+    `downloading ${mustFetch.size} files`,
+  );
   const { files } = await fetchMany(owner, repo, branch, [...mustFetch]);
   const partialScan = tree.truncated || files.length < totalFilesInRepo;
+  lap("fetched files", `${files.length} read${partialScan ? ` of ${totalFilesInRepo} (partial)` : ""}`);
 
   // 5. README excerpt.
   const readme = findReadme(files);
@@ -219,16 +239,24 @@ export async function investigate(input: string): Promise<Report> {
     : null;
 
   // 6. Scanners + vulnerability (OSV) + issue (GitHub) intake, in parallel.
+  onProgress?.(50, "analyze", "Scanning for security issues…");
   const packages = collectPackages(files);
   const [scanFindings, vulnerabilities, issueSummary] = await Promise.all([
     Promise.resolve(runScans(meta, files, flags, totalFilesInRepo)),
     queryVulnerabilities(packages),
     getRecentIssues(owner, repo).then(summarizeIssues),
   ]);
+  lap("static scan", `${scanFindings.length} findings`);
+  lap("vuln check (OSV)", `${vulnerabilities.length} known vulns`);
+  lap("issue review", `${issueSummary?.securityRelated.length ?? 0} security-related`);
+
   // Fold known dependency vulns into the evidence so they influence the grade.
   const vulnFindings = vulnsAsFindings(vulnerabilities);
   const findings: Finding[] = [...scanFindings, ...vulnFindings];
+
+  onProgress?.(65, "grade", "Computing safety score…");
   const gradeResult = grade(findings, meta, totalFilesInRepo);
+  lap("grade", `${gradeResult.verdict} (${gradeResult.score})`);
 
   const scanResult: ScanResult = {
     meta,
@@ -244,7 +272,8 @@ export async function investigate(input: string): Promise<Report> {
   };
 
   // 7. Synthesize (model-authored report, with deterministic fallback).
-  const synth = await synthesize(scanResult, gradeResult);
+  // synthesize() emits its own progress in the 80–95% range as tokens stream.
+  const synth = await synthesize(scanResult, gradeResult, onProgress);
 
   const counts: Record<Severity, number> = {
     critical: 0,
@@ -254,6 +283,12 @@ export async function investigate(input: string): Promise<Report> {
     info: 0,
   };
   for (const f of synth.findings) counts[f.severity]++;
+
+  onProgress?.(100, "complete", "Done!");
+  lap("AI report", `${synth.llmUsed ? (synth.model?.model ?? "model") : "rules-only (no AI)"}`);
+  console.log(
+    `[aspectrr] ── done in ${((Date.now() - t0) / 1000).toFixed(1)}s — verdict: ${synth.verdict} (${synth.score}) ──`,
+  );
 
   return {
     repo: meta,

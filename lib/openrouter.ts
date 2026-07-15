@@ -35,6 +35,9 @@ export interface CompletionOptions {
   responseFormat?: ResponseFormat;
   maxTokens?: number;
   temperature?: number;
+  /** Called as the stream produces tokens, with the running character count —
+   * lets the caller drive a progress bar during generation. */
+  onToken?: (totalChars: number) => void;
 }
 
 export function isConfigured(): boolean {
@@ -126,7 +129,10 @@ export async function complete(
           };
           if (chunk.error) return null;
           const delta = chunk.choices?.[0]?.delta?.content;
-          if (typeof delta === "string") fullContent += delta;
+          if (typeof delta === "string") {
+            fullContent += delta;
+            opts.onToken?.(fullContent.length);
+          }
         } catch {
           /* ignore partial/malformed SSE lines */
         }
@@ -151,10 +157,12 @@ export async function completeJson(
   messages: ChatMessage[],
   _schema: { name: string; schema: object },
   maxTokens?: number,
+  onToken?: (totalChars: number) => void,
 ): Promise<string | null> {
   return complete({
     messages,
     responseFormat: { type: "json_object" },
     maxTokens,
+    onToken,
   });
 }
