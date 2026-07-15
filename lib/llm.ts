@@ -35,6 +35,13 @@ const VERDICT_BAND: Record<Verdict, [number, number]> = {
   unknown: [0, 0],
 };
 
+/** Ordering used by the "no unjustified downgrade" guardrail. */
+const VERDICT_RANK: Record<Verdict, number> = { safe: 0, caution: 1, risky: 2, unknown: 3 };
+
+function hasHighOrCritical(concerns: Finding[]): boolean {
+  return concerns.some((c) => c.severity === "high" || c.severity === "critical");
+}
+
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
 const VERDICTS: Verdict[] = ["safe", "caution", "risky", "unknown"];
 
@@ -310,8 +317,18 @@ function validateModelOutput(raw: unknown, grade: Grade): ModelReport | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
 
-  const verdict = asVerdict(o.verdict, grade.verdict);
-  const scoreRaw = typeof o.score === "number" ? o.score : grade.score;
+  const verdictRaw = asVerdict(o.verdict, grade.verdict);
+  // Guardrail: the model may only make the verdict MORE cautious than the
+  // deterministic prior when there's genuine high/critical evidence. Stops a
+  // mid-tier model from downgrading a clearly-safe popular project (e.g.
+  // esbuild) to "caution" over medium-only noise. When we override, also use
+  // the deterministic score so the number matches the enforced verdict.
+  const override =
+    grade.verdict !== "unknown" &&
+    VERDICT_RANK[verdictRaw] > VERDICT_RANK[grade.verdict] &&
+    !hasHighOrCritical(grade.concerns);
+  const verdict = override ? grade.verdict : verdictRaw;
+  const scoreRaw = override ? grade.score : typeof o.score === "number" ? o.score : grade.score;
   const score = clampScoreForVerdict(scoreRaw, verdict);
   const headline = asString(o.headline, 400).trim() || grade.headline;
   const summary = asString(o.summary, 2500).trim();
@@ -378,25 +395,68 @@ export function vulnsAsFindings(vulns: VulnHit[]): Finding[] {
 // Prompt building.
 // ---------------------------------------------------------------------------
 
+/** Derive a coarse "shape" of the project from fetched files, so the model
+ * can tell a single app from a collection/monorepo and describe it honestly. */
+function deriveProjectShape(files: RepoFile[]): {
+  packageNames: string[];
+  subDirs: string[];
+} {
+  const packageNames = new Set<string>();
+  const subDirs = new Set<string>();
+  const MONOREPO_ROOTS = new Set(["src", "packages", "apps", "servers", "cmd", "services"]);
+
+  for (const f of files) {
+    if (f.path.endsWith("package.json") && !f.path.includes("node_modules")) {
+      try {
+        const p = JSON.parse(f.content) as { name?: unknown };
+        if (typeof p.name === "string" && p.name) packageNames.add(p.name);
+      } catch {
+        /* ignore */
+      }
+    }
+    const parts = f.path.split("/");
+    if (parts.length > 2 && MONOREPO_ROOTS.has(parts[0])) {
+      subDirs.add(`${parts[0]}/${parts[1]}`);
+    }
+  }
+  return {
+    packageNames: [...packageNames].sort(),
+    subDirs: [...subDirs].sort().slice(0, 40),
+  };
+}
+
 function buildMessages(scan: ScanResult, grade: Grade, kind: IntegrationGuide["kind"] | null): ChatMessage[] {
   const { meta } = scan;
 
-  const system = `You are Aspectrr, a security analyst writing a safety report for a NON-TECHNICAL person who is deciding whether to use an open-source project.
+  const system = `You are Aspectrr, a friendly, clear-eyed security guide. You write a plain-English safety report for a NON-TECHNICAL person deciding whether to use an open-source project. Imagine a knowledgeable friend who's good with computers, explaining things patiently and honestly.
 
-You receive structured intelligence gathered automatically: repository metadata, a README excerpt, the detected integration type, an automated scanner's verdict/score plus its findings (good signals and concerns), recent GitHub issues (with security-related ones flagged), known vulnerabilities in the project's dependencies, and a cybersecurity checklist.
+You receive structured intelligence gathered automatically: repository metadata, a README excerpt, the project's structure, the detected integration type, an automated scanner's verdict/score plus its findings (good signals and concerns), recent GitHub issues (with security-related ones flagged), known vulnerabilities in the project's dependencies, and a cybersecurity checklist.
 
-Your job: synthesize ALL of that into ONE plain-English safety report as JSON.
+Synthesize ALL of it into ONE report as JSON.
 
-Writing rules:
-- Plain everyday English. No jargon, no code in the summary, no fearmongering, no hype.
-- Be calibrated: call something dangerous only if the evidence supports it; never call third-party code perfectly safe.
-- The "summary" explains what the project IS and DOES for a beginner.
-- "howToUse" gives concrete install/use steps pulled from the README; do not invent commands.
-- "findings" lists everything worth checking (scanner concerns + known vulns + issue-tracker warnings), each with a plain-English explanation. Keep severe items; you may trim trivial duplicates.
-- "goodSignals" lists positive signs (popularity, maintenance, license, tests, CI, etc.).
-- Use the cybersecurity checklist as the lens for what to look for, and mention anything relevant in findings.
-- You MAY adjust the verdict/score from the automated one when the issues, vulnerabilities, or repo signals clearly justify it — but stay calibrated and never downplay a critical/high red flag or a known critical/high vulnerability.
-- Output ONLY a single JSON object. No prose, no markdown fences.`;
+DESCRIBING THE PROJECT (most important):
+- Describe the project AS A WHOLE. Anchor on the repo description and the README, not on a single file or component.
+- If the project bundles several apps, servers, packages, or modules (a collection or monorepo), SAY SO: name the overall project, then list its main parts. Never describe the whole project as if it were just one of its components. The "projectStructure" field tells you what parts exist — use it.
+- Two or three plain sentences: what it is, what it's for, and who uses it. No jargon.
+
+TONE:
+- Warm and honest. Reassuring when the project is solid; clear and specific when there's real risk.
+- No fearmongering, no hype, no marketing fluff. No code in the summary.
+- Speak to a beginner, but don't be vague.
+
+VERDICT & SCORE:
+- You may adjust the automated verdict/score when the issues, vulnerabilities, or repo signals clearly justify it. Stay calibrated.
+- Never downplay a critical/high red flag or a known critical/high vulnerability. Never call third-party code perfectly safe.
+
+FIELDS:
+- headline: one warm, specific sentence capturing the verdict.
+- summary: what the project IS and DOES (see DESCRIBING THE PROJECT above).
+- howToUse: concrete install/use steps from the README. If the project has multiple parts, give the general setup pattern and point readers to the README for the specifics of each part. Never invent commands or package names that aren't in the README or projectStructure.
+- findings: everything worth checking — scanner concerns, known vulns, issue-tracker warnings. Each gets a plain-English title and an explanation of why it matters and what (if anything) to do. Keep severe items; trim trivial duplicates.
+- goodSignals: positive signs (popularity, maintenance, license, tests, CI, docs, etc.).
+- Use the cybersecurity checklist as your lens for what to look for.
+
+Output ONLY a single JSON object. No prose, no markdown fences.`;
 
   const vulns = scan.vulnerabilities.map((v) => ({
     id: v.id,
@@ -422,6 +482,8 @@ Writing rules:
       }
     : null;
 
+  const shape = deriveProjectShape(scan.files);
+
   const user = JSON.stringify({
     repository: {
       name: meta.fullName,
@@ -441,6 +503,13 @@ Writing rules:
         : null,
     },
     readmeExcerpt: scan.readmeExcerpt,
+    projectStructure: {
+      publishedPackages: shape.packageNames,
+      componentDirs: shape.subDirs,
+      note: shape.subDirs.length > 1 || shape.packageNames.length > 1
+        ? "This looks like a collection/monorepo with multiple parts — describe the whole, then the parts."
+        : null,
+    },
     detectedIntegrationKind: kind,
     automatedScan: {
       verdict: grade.verdict,
@@ -474,7 +543,7 @@ export async function synthesize(scan: ScanResult, grade: Grade): Promise<Synthe
   }
 
   const messages = buildMessages(scan, grade, kind);
-  const text = await completeJson(messages, OUTPUT_SCHEMA, 2600);
+  const text = await completeJson(messages, OUTPUT_SCHEMA, 3000);
   const raw = text ? extractJsonObject(text) : null;
   const model = validateModelOutput(raw, grade);
 
