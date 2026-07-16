@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aspectrr — Is this open-source project safe to use?",
+  title: "Aspectrr: is this open-source project safe to use?",
   description:
-    "Paste a GitHub URL and get a plain-English safety report: malware red flags, what the project does, and how to use it.",
+    "Paste a GitHub URL and get a plain-English safety report. Aspectrr reads the code, flags the malware signals, and tells you if you can trust it.",
 };
 
 export default function RootLayout({
@@ -28,7 +28,9 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">{children}</body>
+      <body className="min-h-full flex flex-col bg-bone text-ink antialiased">
+        {children}
+      </body>
     </html>
   );
 }

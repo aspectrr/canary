@@ -40,7 +40,7 @@ export class UserInputError extends Error {
 }
 
 const DISCLAIMER =
-  "This report is produced by automated heuristics. It can flag suspicious patterns and common malware indicators, but it cannot guarantee a project is safe — and a clever attacker can evade it. Treat the verdict as a starting point, not a guarantee. When in doubt, ask someone technical to review the code, or run it in a sandbox.";
+  "This report comes from automated checks. It can flag suspicious patterns and common malware signs, but it can't guarantee a project is safe, and a clever attacker can hide. Treat the verdict as a starting point, not a guarantee. If you're unsure, ask someone technical to look at the code, or run it in a sandbox.";
 
 const MAX_SOURCE_FILES = 120;
 const MAX_MANIFEST_FILES = 30;

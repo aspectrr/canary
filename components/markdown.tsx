@@ -22,7 +22,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       nodes.push(
         <code
           key={key}
-          className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.85em] text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"
+          className="bg-stone px-1.5 py-0.5 font-mono text-[0.85em] text-ink/75"
         >
           {m[4]}
         </code>,
@@ -34,7 +34,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
           href={m[7]}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-medium text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-800 dark:text-sky-400 dark:decoration-sky-700"
+          className="font-medium text-ink underline decoration-ink/30 underline-offset-2 hover:decoration-ink"
         >
           {m[6]}
         </a>,
@@ -67,7 +67,7 @@ export function Markdown({ source }: { source: string }) {
       blocks.push(
         <pre
           key={key++}
-          className="overflow-x-auto rounded-lg bg-zinc-900 p-3 font-mono text-xs text-zinc-100 dark:bg-zinc-950"
+          className="overflow-x-auto bg-ink p-3 font-mono text-xs leading-relaxed text-bone"
         >
           <code>{buf.join("\n")}</code>
         </pre>,

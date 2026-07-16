@@ -112,7 +112,7 @@ function integrationTemplate(kind: IntegrationGuide["kind"], meta: RepoMeta): st
   const repo = meta.url;
   switch (kind) {
     case "mcp-server":
-      return `This project is an **MCP server** — a tool that plugs into AI apps like Claude Desktop, Claude Code, Cursor, or Codex.
+      return `This project is an **MCP server**, a tool that plugs into AI apps like Claude Desktop, Claude Code, Cursor, or Codex.
 
 1. Install it as described in its README (often \`npx\` or \`node\`).
 2. Add it to your AI app's MCP config.
@@ -135,7 +135,7 @@ Repo: <${repo}>`;
 1. Install it exactly as the README shows (often \`npm install -g\`, \`pipx install\`, or \`cargo install\`).
 2. Run it from a terminal using the command in the README.
 
-If you're not comfortable with a terminal, ask someone to help — CLI tools run on your machine with your permissions.
+If you're not comfortable with a terminal, ask someone to help. CLI tools run on your machine with your permissions.
 
 Repo: <${repo}>`;
     case "vscode-extension":
@@ -149,7 +149,7 @@ Repo: <${repo}>`;
     case "library":
       return `This project is a **library/package** meant to be used inside other code.
 
-1. Install it with the package manager it targets (the README will say — e.g. \`npm install\`, \`pip install\`, \`cargo add\`).
+1. Install it with the package manager it targets (the README will say which, e.g. \`npm install\`, \`pip install\`, \`cargo add\`).
 2. Import or require it in your project as the README shows.
 
 If you don't write code yourself, you'll want a developer to do this part.
@@ -444,6 +444,11 @@ TONE:
 - Warm and honest. Reassuring when the project is solid; clear and specific when there's real risk.
 - No fearmongering, no hype, no marketing fluff. No code in the summary.
 - Speak to a beginner, but don't be vague.
+
+WRITING VOICE (important):
+- Sound like a real person talking, not a press release. Short, plain sentences. Mix in the occasional fragment. Vary the length.
+- Never use em dashes. Use commas, periods, or parentheses instead.
+- No filler or corporate words: "leverage," "robust," "seamless," "comprehensive," "actionable," "delve," "showcase," "foster," "holistic." State facts plainly. If a clause adds no information, cut it.
 
 VERDICT & SCORE:
 - You may adjust the automated verdict/score when the issues, vulnerabilities, or repo signals clearly justify it. Stay calibrated.
