@@ -263,49 +263,22 @@ export async function getRawFile(
   }
 }
 
-export interface DiscussionRaw {
-  number: number;
-  title: string;
-  url: string;
-}
-
 /**
- * Fetch recent GitHub Discussions via the GraphQL API.
- *
- * Discussions are a separate feature from Issues and only exist via GraphQL.
- * Returns null when discussions are disabled for the repo (the `discussions`
- * field is null) or on any error. Never throws.
+ * Proxy a GitHub REST API path for the agent's `github` tool. Restricted to
+ * the repo being investigated (path must reference owner/repo) so the model
+ * can't wander into other accounts. Returns parsed JSON, or throws on failure.
  */
-export async function getDiscussions(
+export async function fetchApiJson(
   owner: string,
   repo: string,
-): Promise<{ total: number; nodes: DiscussionRaw[] } | null> {
-  const query = `query Discussions($owner: String!, $name: String!) {
-    repository(owner: $owner, name: $name) {
-      discussions(first: 30, orderBy: {field: UPDATED_AT, direction: DESC}) {
-        totalCount
-        nodes { number title url }
-      }
-    }
-  }`;
-  try {
-    const res = await fetch(`${API}/graphql`, {
-      method: "POST",
-      headers: authHeaders(),
-      body: JSON.stringify({ query, variables: { owner, name: repo } }),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      data?: {
-        repository?: {
-          discussions?: { totalCount: number; nodes: DiscussionRaw[] } | null;
-        } | null;
-      } | null;
-    };
-    const d = data.data?.repository?.discussions;
-    if (!d) return null;
-    return { total: d.totalCount, nodes: d.nodes ?? [] };
-  } catch {
-    return null;
+  path: string,
+): Promise<unknown> {
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  const prefix = `/repos/${owner}/${repo}`.toLowerCase();
+  if (!clean.toLowerCase().startsWith(prefix)) {
+    throw new Error(
+      `Refused: the github tool can only query ${owner}/${repo}. Use a path like /repos/${owner}/${repo}/issues.`,
+    );
   }
+  return ghFetch<unknown>(clean);
 }

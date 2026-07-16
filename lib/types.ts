@@ -1,13 +1,13 @@
 /**
- * Shared types for the safety-check investigation engine.
+ * Shared types for the Canary investigation engine.
  *
  * The engine is split into three layers:
  *   1. Deterministic scanners  -> produce structured `Finding[]` evidence
- *   2. Grader                   -> turns findings + repo signals into a `Verdict`
- *   3. Synthesizer (LLM)        -> turns everything into a plain-English report
+ *   2. Grader                   -> turns findings + repo signals into a baseline `Verdict`
+ *   3. Agent (LLM + tools)      -> investigates further, then writes the report
  *
- * Layer 3 degrades gracefully to a rules-only report when no LLM key is set,
- * so the app always returns something useful.
+ * Layer 3 drives its own external research with tools (web search, web fetch,
+ * GitHub API) rather than receiving force-gathered data.
  */
 
 export type Verdict = "safe" | "caution" | "risky" | "unknown";
@@ -113,64 +113,23 @@ export interface PackageRef {
   version: string;
 }
 
-/** A known vulnerability hit from OSV.dev. */
-export interface VulnHit {
-  id: string;
-  package: string;
-  ecosystem: Ecosystem;
-  version: string;
-  severity: Severity;
-  /** CVSS-like or textual severity string from the source, if any. */
-  rawSeverity?: string;
-  summary?: string;
-  url?: string;
-  fixedIn?: string;
-}
-
-/** A web-search result (Brave Search API). Used to pull independent community /
- * advisory signals about a project that aren't in the repo itself. */
+/** A web-search result. */
 export interface WebResult {
   title: string;
   url: string;
   snippet: string;
-  /** Source domain, e.g. "reddit.com" or "nvd.nist.gov". */
   source: string;
 }
 
-/** A GitHub issue relevant to safety/maintenance. */
-export interface IssueRef {
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  url: string;
-  labels: string[];
-  securityRelated: boolean;
-}
-
-/** Summary of a repo's issues. */
-export interface RepoIssues {
-  total: number;
-  open: number;
-  /** Issues mentioning security/vulns/malware/etc. */
-  securityRelated: IssueRef[];
-  /** A small recent sample for context. */
-  recent: IssueRef[];
-}
-
-/** A GitHub Discussion (community Q&A, separate from Issues). */
-export interface DiscussionRef {
-  number: number;
-  title: string;
-  url: string;
-  securityRelated: boolean;
-}
-
-/** Summary of a repo's discussions (GraphQL endpoint; null if disabled). */
-export interface RepoDiscussions {
-  total: number;
-  /** Discussions mentioning security/vulns/malware/etc. */
-  securityRelated: DiscussionRef[];
-  recent: DiscussionRef[];
+/** One step the agent took during its investigation loop. Surfaced in the
+ * report so the user can see what was actually checked. */
+export interface EvidenceStep {
+  /** Tool that ran: web_search | fetch_url | github. */
+  action: string;
+  /** What was queried: the search query, host, or API path. */
+  detail: string;
+  /** Short outcome, e.g. "4 results" or "8 issues". */
+  summary: string;
 }
 
 /** What the engine collected before synthesis. */
@@ -183,11 +142,6 @@ export interface ScanResult {
   findings: Finding[];
   readmeExcerpt: string | null;
   packages: PackageRef[];
-  vulnerabilities: VulnHit[];
-  issues: RepoIssues | null;
-  discussions: RepoDiscussions | null;
-  /** Independent web-search signals (Brave). Empty when search isn't configured. */
-  webResults: WebResult[];
 }
 
 
@@ -227,14 +181,9 @@ export interface Report {
   howToUse: string;
   /** Setup guidance for Claude / Claude Code / Codex / Cursor, when relevant. */
   integration: IntegrationGuide | null;
-  /** Known vulnerabilities found in declared dependencies (OSV.dev). */
-  vulnerabilities: VulnHit[];
-  /** Issue-tracker signals. */
-  issues: RepoIssues | null;
-  /** Discussion-board signals. */
-  discussions: RepoDiscussions | null;
-  /** Independent web-search signals (Brave). Empty when search isn't configured. */
-  webResults: WebResult[];
+  /** Steps the agent took during its investigation (web search, fetches,
+   * GitHub API calls). Empty when no AI key was set. */
+  evidence: EvidenceStep[];
   scannedFiles: number;
   totalFilesInRepo: number;
   partialScan: boolean;

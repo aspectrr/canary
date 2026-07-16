@@ -166,65 +166,6 @@ export function ReportView({ report }: { report: Report }) {
         </section>
       )}
 
-      {/* Known vulnerabilities (OSV.dev) */}
-      {report.vulnerabilities.length > 0 && (
-        <section>
-          <SectionLabel>Known vulnerabilities in dependencies ({report.vulnerabilities.length})</SectionLabel>
-          <p className="mb-4 text-sm text-ink/55">
-            Verified against the OSV.dev database. These are real, published
-            issues, not guesses.
-          </p>
-          <ul>
-            {report.vulnerabilities.slice(0, 12).map((v) => {
-              const sev = SEVERITY_META[v.severity];
-              return (
-                <li
-                  key={`${v.id}-${v.package}`}
-                  className="border-t border-ink/15 py-4 first:border-t-0 first:pt-0"
-                >
-                  <div className="flex items-start gap-3">
-                    <span className={`mt-1.5 h-2 w-2 flex-shrink-0 ${sev.marker}`} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-mono text-xs font-semibold">{v.id}</span>
-                        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink/45">
-                          {sev.label}
-                        </span>
-                        {v.fixedIn && (
-                          <span className="border border-ink/25 px-1.5 py-0.5 text-[11px] text-ink/70">
-                            fix in {v.fixedIn}
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1 text-sm text-ink/80">
-                        In{" "}
-                        <code className="bg-stone px-1 py-0.5 font-mono text-[11px] text-ink/65">
-                          {v.package}@{v.version}
-                        </code>
-                        {v.ecosystem !== "npm" && <span className="text-ink/45"> ({v.ecosystem})</span>}
-                      </p>
-                      {v.summary && (
-                        <p className="mt-1 text-sm leading-relaxed text-ink/65">{v.summary}</p>
-                      )}
-                      {v.url && (
-                        <a
-                          href={v.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-1 inline-block border-b border-ink/40 pb-0.5 text-xs font-medium text-ink hover:border-ink"
-                        >
-                          Advisory details ↗
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
-
       {/* Good signs */}
       {report.goodSignals.length > 0 && (
         <section>
@@ -243,35 +184,6 @@ export function ReportView({ report }: { report: Report }) {
                   <path d="M4 10.5l4 4 8-9" strokeLinecap="square" strokeLinejoin="miter" />
                 </svg>
                 <span>{g.title}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* Security-related issues */}
-      {report.issues && report.issues.securityRelated.length > 0 && (
-        <section>
-          <SectionLabel>Security-related issues in the tracker</SectionLabel>
-          <ul className="space-y-2">
-            {report.issues.securityRelated.map((i) => (
-              <li key={i.number} className="flex items-start gap-2.5 text-sm">
-                <span
-                  className={`mt-1.5 h-1.5 w-1.5 flex-shrink-0 ${
-                    i.state === "open" ? "bg-ink" : "border border-ink/35"
-                  }`}
-                />
-                <a
-                  href={i.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="border-b border-ink/30 pb-0.5 text-ink/80 hover:border-ink hover:text-ink"
-                >
-                  {i.title}
-                  <span className="ml-1 font-mono text-xs text-ink/45">
-                    #{i.number} · {i.state}
-                  </span>
-                </a>
               </li>
             ))}
           </ul>
@@ -297,17 +209,30 @@ export function ReportView({ report }: { report: Report }) {
         </section>
       )}
 
-      {/* What we checked — evidence sources worked through */}
-      <section>
-        <SectionLabel>What we checked</SectionLabel>
-        <ul className="grid gap-x-6 gap-y-2 text-sm text-ink/70 sm:grid-cols-2">
-          <EvidenceItem label="Source code" value={`${report.scannedFiles.toLocaleString()} file${report.scannedFiles === 1 ? "" : "s"}${report.partialScan ? " (partial scan)" : ""}`} />
-          <EvidenceItem label="Known vulnerabilities" value={`${report.vulnerabilities.length} found`} />
-          <EvidenceItem label="GitHub issues" value={report.issues ? `${report.issues.securityRelated.length} security-related of ${report.issues.total}` : "none"} />
-          <EvidenceItem label="Discussions" value={report.discussions ? `${report.discussions.total} threads` : "not enabled"} />
-          <EvidenceItem label="Web reputation" value={`${report.webResults.length} result${report.webResults.length === 1 ? "" : "s"}`} />
-        </ul>
-      </section>
+      {/* How the investigator checked — real tool calls from the agent loop */}
+      {report.evidence.length > 0 && (
+        <section>
+          <SectionLabel>How the investigator checked ({report.evidence.length})</SectionLabel>
+          <ul className="space-y-2.5">
+            {report.evidence.map((step, i) => (
+              <li key={i} className="flex items-start gap-3 text-sm">
+                <span
+                  className="mt-0.5 flex-shrink-0 border border-ink/30 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-ink/55"
+                  title={step.action}
+                >
+                  {EVIDENCE_LABEL[step.action] ?? step.action}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="text-ink/80">{step.detail}</span>
+                  {step.summary && (
+                    <span className="ml-2 text-ink/40">{step.summary}</span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Footer */}
       <footer className="space-y-1.5 border-t border-ink/15 pt-4 font-mono text-[11px] leading-relaxed text-ink/40">
@@ -317,9 +242,7 @@ export function ReportView({ report }: { report: Report }) {
           {report.totalFilesInRepo.toLocaleString()} files
           {report.partialScan ? " (partial scan)" : ""}
           {" · "}
-          {report.llmUsed
-            ? "report written by an LLM"
-            : "rules-only report (no AI model connected)"}
+          {report.llmUsed ? "report written by an LLM" : "no AI model connected"}
           {" · "}generated {new Date(report.generatedAt).toLocaleString()}
         </p>
       </footer>
@@ -344,11 +267,8 @@ function labelForKind(kind: string): string {
   }
 }
 
-function EvidenceItem({ label, value }: { label: string; value: string }) {
-  return (
-    <li className="flex items-baseline justify-between gap-3 border-b border-ink/10 pb-1">
-      <span className="text-ink/50">{label}</span>
-      <span className="text-right font-mono text-xs text-ink/80">{value}</span>
-    </li>
-  );
-}
+const EVIDENCE_LABEL: Record<string, string> = {
+  web_search: "SEARCH",
+  fetch_url: "READ",
+  github: "GITHUB",
+};

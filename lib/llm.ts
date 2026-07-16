@@ -1,8 +1,15 @@
 import type { ProgressFn } from "./progress";
 import type { Grade } from "./grade";
-import { activeModel, completeJson, isConfigured, type ChatMessage } from "./openrouter";
+import {
+  activeModel,
+  chatComplete,
+  isConfigured,
+  type AgentMessage,
+} from "./openrouter";
+import { AGENT_TOOLS, executeTool, toolCallLabel, type ToolCtx } from "./tools";
 import { checklistForPrompt } from "./checklist";
 import type {
+  EvidenceStep,
   Finding,
   IntegrationGuide,
   RepoFile,
@@ -10,7 +17,6 @@ import type {
   ScanResult,
   Severity,
   Verdict,
-  VulnHit,
 } from "./types";
 
 /**
@@ -59,6 +65,8 @@ export interface Synthesis {
   integration: IntegrationGuide | null;
   goodSignals: Finding[];
   findings: Finding[];
+  /** What the agent actually did during its investigation loop. */
+  evidence: EvidenceStep[];
   llmUsed: boolean;
   model: { provider: string; model: string } | null;
 }
@@ -163,50 +171,6 @@ Repo: <${repo}>`;
       return `Open the README for setup instructions tailored to this project: <${repo}>`;
   }
 }
-
-// ---------------------------------------------------------------------------
-// JSON schema the model is asked to follow (strict:false — we validate anyway).
-// ---------------------------------------------------------------------------
-
-const OUTPUT_SCHEMA = {
-  name: "safety_report",
-  schema: {
-    type: "object",
-    properties: {
-      verdict: { type: "string", enum: VERDICTS, description: "safe | caution | risky | unknown" },
-      score: { type: "integer", minimum: 0, maximum: 100, description: "Confidence-of-safety: higher = safer." },
-      headline: { type: "string", description: "One plain-English sentence summarizing the verdict." },
-      summary: { type: "string", description: "2-4 sentences: what this project is and does, for a non-technical reader." },
-      howToUse: { type: "string", description: "Plain-English install/use steps from the README." },
-      integrationInstructions: { type: ["string", "null"], description: "Setup steps for Claude/Claude Code/Codex/Cursor, or null." },
-      goodSignals: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            detail: { type: "string" },
-          },
-          required: ["title", "detail"],
-        },
-      },
-      findings: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            severity: { type: "string", enum: SEVERITIES },
-            title: { type: "string" },
-            detail: { type: "string" },
-            file: { type: ["string", "null"] },
-          },
-          required: ["severity", "title", "detail"],
-        },
-      },
-    },
-    required: ["verdict", "score", "headline", "summary", "howToUse", "goodSignals", "findings"],
-  },
-};
 
 // ---------------------------------------------------------------------------
 // Validation + coercion of the model's output.
@@ -335,24 +299,6 @@ function extractJsonObject(text: string): unknown | null {
 }
 
 // ---------------------------------------------------------------------------
-// Vuln -> Finding helpers (so known vulns always appear as concerns).
-// ---------------------------------------------------------------------------
-
-export function vulnsAsFindings(vulns: VulnHit[]): Finding[] {
-  return vulns.map((v) => ({
-    id: `vuln.${v.id}.${v.package}`,
-    category: "secret-endpoint",
-    severity: v.severity,
-    title: `Known vulnerability in \`${v.package}\`: ${v.id}`,
-    detail: `The dependency \`${v.package}\` (version ${v.version}) has a known security issue (${v.id})${
-      v.summary ? `: ${v.summary}` : ""
-    }.${v.fixedIn ? ` Fix available in version ${v.fixedIn}.` : " No fixed version was listed."} Known dependency vulnerabilities like this are the most concrete, verifiable risk in a project.`,
-    evidence: v.id,
-    ...(v.url ? { snippet: v.url } : {}),
-  }));
-}
-
-// ---------------------------------------------------------------------------
 // Prompt building.
 // ---------------------------------------------------------------------------
 
@@ -386,84 +332,52 @@ function deriveProjectShape(files: RepoFile[]): {
   };
 }
 
-function buildMessages(scan: ScanResult, grade: Grade, kind: IntegrationGuide["kind"] | null): ChatMessage[] {
+function buildInitialMessages(
+  scan: ScanResult,
+  grade: Grade,
+  kind: IntegrationGuide["kind"] | null,
+): AgentMessage[] {
   const { meta } = scan;
-
-  const system = `You are a friendly, clear-eyed security guide. You write a plain-English safety report for a NON-TECHNICAL person deciding whether to use an open-source project. Imagine a knowledgeable friend who's good with computers, explaining things patiently and honestly.
-
-You receive structured intelligence gathered automatically: repository metadata, a README excerpt, the project's structure, the detected integration type, an automated scanner's verdict/score plus its findings (good signals and concerns), recent GitHub issues (with security-related ones flagged), recent GitHub discussions (with security-related ones flagged), known vulnerabilities in the project's dependencies, independent web-search results about the project's reputation, and a cybersecurity checklist.
-
-Synthesize ALL of it into ONE report as JSON.
-
-DESCRIBING THE PROJECT (most important):
-- Describe the project AS A WHOLE. Anchor on the repo description and the README, not on a single file or component.
-- If the project bundles several apps, servers, packages, or modules (a collection or monorepo), SAY SO: name the overall project, then list its main parts. Never describe the whole project as if it were just one of its components. The "projectStructure" field tells you what parts exist — use it.
-- Two or three plain sentences: what it is, what it's for, and who uses it. No jargon.
-
-TONE:
-- Warm and honest. Reassuring when the project is solid; clear and specific when there's real risk.
-- No fearmongering, no hype, no marketing fluff. No code in the summary.
-- Speak to a beginner, but don't be vague.
-
-WRITING VOICE (important):
-- Sound like a real person talking, not a press release. Short, plain sentences. Mix in the occasional fragment. Vary the length.
-- Never use em dashes. Use commas, periods, or parentheses instead.
-- No filler or corporate words: "leverage," "robust," "seamless," "comprehensive," "actionable," "delve," "showcase," "foster," "holistic." State facts plainly. If a clause adds no information, cut it.
-
-VERDICT & SCORE:
-- You may adjust the automated verdict/score when the issues, vulnerabilities, or repo signals clearly justify it. Stay calibrated.
-- Never downplay a critical/high red flag or a known critical/high vulnerability. Never call third-party code perfectly safe.
-
-FIELDS:
-- headline: one warm, specific sentence capturing the verdict.
-- summary: what the project IS and DOES (see DESCRIBING THE PROJECT above).
-- howToUse: concrete install/use steps from the README. If the project has multiple parts, give the general setup pattern and point readers to the README for the specifics of each part. Never invent commands or package names that aren't in the README or projectStructure.
-- findings: everything worth checking — scanner concerns, known vulns, issue-tracker warnings, discussion warnings, and anything the web search turned up about the project's reputation. Each gets a plain-English title and an explanation of why it matters and what (if anything) to do. Keep severe items; trim trivial duplicates.
-- goodSignals: positive signs (popularity, maintenance, license, tests, CI, docs, etc.).
-- Use the cybersecurity checklist as your lens for what to look for.
-
-Output ONLY a single JSON object. No prose, no markdown fences.`;
-
-  const vulns = scan.vulnerabilities.map((v) => ({
-    id: v.id,
-    package: v.package,
-    version: v.version,
-    severity: v.severity,
-    summary: v.summary,
-    fixedIn: v.fixedIn ?? null,
-    url: v.url ?? null,
-  }));
-
-  const issues = scan.issues
-    ? {
-        totalSeen: scan.issues.total,
-        openApprox: scan.issues.open,
-        securityRelated: scan.issues.securityRelated.map((i) => ({
-          number: i.number,
-          title: i.title,
-          state: i.state,
-          url: i.url,
-        })),
-        recentSample: scan.issues.recent.slice(0, 4).map((i) => ({ title: i.title, state: i.state })),
-      }
-    : null;
-
-  const discussions = scan.discussions
-    ? {
-        total: scan.discussions.total,
-        securityRelated: scan.discussions.securityRelated.map((d) => ({
-          number: d.number,
-          title: d.title,
-          url: d.url,
-        })),
-      }
-    : null;
-
-  const webResults = scan.webResults.length
-    ? scan.webResults.map((w) => ({ title: w.title, url: w.url, snippet: w.snippet, source: w.source }))
-    : null;
-
   const shape = deriveProjectShape(scan.files);
+
+  const system = `You are a careful, clear-eyed open-source safety investigator. A non-technical person is deciding whether to use the project you're investigating, and they're trusting your judgment. Imagine a knowledgeable friend who's good with computers, explaining things patiently and honestly.
+
+You are given an AUTOMATED SCAN as a starting baseline: repository metadata, a README excerpt, the project's file structure, and findings from deterministic code scanners (install scripts, obfuscation, secrets/endpoints, dependency and reputation signals). That baseline is reliable but incomplete. Your job is to INVESTIGATE FURTHER using your tools, then write a plain-English safety report.
+
+YOU HAVE THREE TOOLS. Use them as you see fit; you are not required to use all of them, and you decide when you have enough:
+- web_search(query): check the project's public reputation, look for known vulnerabilities (CVEs), malware reports, supply-chain incidents, or community warnings.
+- fetch_url(url): read a web page in full (an advisory, a blog post, a package-registry page, a raw file).
+- github(path): read this repo's issues, pull requests, releases, commits, contributors, or specific files via the GitHub API.
+
+Investigate with judgment, and ALWAYS verify independently — never rely on the baseline scan alone. At a minimum:
+- Run at least one web_search to check the project's public reputation and any known vulnerabilities or supply-chain incidents.
+- Use github to look at open issues (especially anything security-related) or pull a specific file the baseline flagged.
+- Use fetch_url to read a promising search result in full when a snippet isn't enough.
+A popular, well-known project may need only a couple of confirming checks. An unfamiliar one, or one with scanner red flags, deserves more. Don't pad the investigation with pointless calls, but don't skip real due diligence either. If you write the report without calling any tools, you have not done your job.
+
+WHEN YOU'RE DONE investigating, write the final report as a single JSON object (no markdown fences, no prose around it). Use this schema:
+{
+  "verdict": "safe" | "caution" | "risky" | "unknown",
+  "score": integer 0-100 (higher = safer),
+  "headline": one warm, specific sentence,
+  "summary": 2-4 plain sentences: what the project IS and DOES (describe it as a whole; if it's a collection/monorepo, name the parts),
+  "howToUse": concrete install/use steps from the README (never invent commands or package names),
+  "integrationInstructions": setup steps for Claude/Claude Code/Codex/Cursor when relevant, else null,
+  "goodSignals": [{"title":..., "detail":...}],
+  "findings": [{"severity":"critical|high|medium|low|info", "title":..., "detail":..., "file": optional}]
+}
+
+TONE & VOICE:
+- Warm and honest. Reassuring when the project is solid; clear and specific when there's real risk.
+- Sound like a real person, not a press release. Short, plain sentences. Mix in the occasional fragment.
+- NEVER use em dashes. Use commas, periods, or parentheses.
+- No filler: "leverage," "robust," "seamless," "comprehensive," "delve," "holistic." State facts plainly.
+
+VERDICT CALIBRATION:
+- You may adjust the automated baseline verdict when your investigation justifies it.
+- Never downplay a critical or high red flag. Never call third-party code perfectly safe.
+
+When you're ready, respond with ONLY the JSON object and no tool calls.`;
 
   const user = JSON.stringify({
     repository: {
@@ -487,9 +401,10 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
     projectStructure: {
       publishedPackages: shape.packageNames,
       componentDirs: shape.subDirs,
-      note: shape.subDirs.length > 1 || shape.packageNames.length > 1
-        ? "This looks like a collection/monorepo with multiple parts — describe the whole, then the parts."
-        : null,
+      note:
+        shape.subDirs.length > 1 || shape.packageNames.length > 1
+          ? "Collection/monorepo with multiple parts. Describe the whole, then the parts."
+          : null,
     },
     detectedIntegrationKind: kind,
     automatedScan: {
@@ -500,11 +415,13 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
       partialScan: scan.partialScan,
     },
     goodSignals: grade.goodSignals.map((g) => ({ title: g.title, detail: g.detail })),
-    concerns: grade.concerns.map((c) => ({ severity: c.severity, title: c.title, detail: c.detail, file: c.file ?? null })),
-    knownVulnerabilities: vulns,
-    issues,
-    discussions,
-    webSearchResults: webResults,
+    concerns: grade.concerns.map((c) => ({
+      severity: c.severity,
+      title: c.title,
+      detail: c.detail,
+      file: c.file ?? null,
+    })),
+    packages: scan.packages.map((p) => ({ name: p.name, ecosystem: p.ecosystem, version: p.version })),
     cybersecurityChecklist: checklistForPrompt(),
   });
 
@@ -515,12 +432,95 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
 }
 
 // ---------------------------------------------------------------------------
-// Public entrypoint.
+// Agent loop.
 // ---------------------------------------------------------------------------
 
-/** Backup model tried if the primary model fails every retry. Keep it fast
- * and broadly available so the cascade reliably rescues a flaky primary. */
+/** Backup model tried if the primary model fails. Fast and tool-capable. */
 const FALLBACK_MODEL = process.env.OPENROUTER_FALLBACK_MODEL ?? "google/gemini-2.5-flash";
+
+/** Hard cap on tool-call rounds, so a looping model can't run forever. */
+const MAX_TOOL_ROUNDS = 12;
+
+interface LoopResult {
+  report: ModelReport;
+  evidence: EvidenceStep[];
+}
+
+/** Parse the JSON-string arguments a model sends with a tool call. */
+function parseToolArgs(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Run one full agent investigation with a single model. Throws on failure. */
+async function runAgentLoop(
+  scan: ScanResult,
+  grade: Grade,
+  kind: IntegrationGuide["kind"] | null,
+  model: string,
+  ctx: ToolCtx,
+  onProgress?: ProgressFn,
+): Promise<LoopResult> {
+  const messages = buildInitialMessages(scan, grade, kind);
+  const evidence: EvidenceStep[] = [];
+  let toolCallIndex = 0;
+  let lastContent: string | null = null;
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const reply = await chatComplete(messages, { tools: AGENT_TOOLS, model, maxTokens: 1800, temperature: 0.3 });
+    messages.push(reply);
+
+    // No tool calls => the model is handing back its final answer.
+    if (!reply.tool_calls || reply.tool_calls.length === 0) {
+      // Guardrail: if it tried to finish before investigating at all, push it
+      // back to do real research first. (A model that answers from the
+      // baseline alone has not verified anything independently.)
+      if (toolCallIndex === 0) {
+        messages.push({
+          role: "user",
+          content:
+            "You haven't investigated yet. Use your tools to verify this project independently before writing the report. Start with a web search for its reputation and any known vulnerabilities, and check its open issues via the github tool. Only write the report once you've gathered real evidence.",
+        });
+        continue;
+      }
+      lastContent = reply.content;
+      break;
+    }
+
+    // Execute each tool call and feed results back.
+    for (const tc of reply.tool_calls) {
+      toolCallIndex += 1;
+      const args = parseToolArgs(tc.function.arguments);
+      const label = toolCallLabel(tc.function.name, args);
+      const pct = Math.min(90, 62 + toolCallIndex * 3);
+      onProgress?.(pct, `agent-${toolCallIndex}`, label);
+      const result = await executeTool(tc.function.name, args, ctx, evidence);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: result });
+    }
+  }
+
+  // If the model burned through every round still calling tools, force a finish.
+  if (lastContent === null) {
+    messages.push({
+      role: "user",
+      content:
+        "You've gathered enough. Stop calling tools and write the final report now as a single JSON object, nothing else.",
+    });
+    const reply = await chatComplete(messages, { model, maxTokens: 3000, temperature: 0.2 });
+    lastContent = reply.content;
+  }
+
+  const raw = lastContent ? extractJsonObject(lastContent) : null;
+  const report = validateModelOutput(raw, grade);
+  if (!report) {
+    throw new Error("The model finished its investigation but didn't return a valid report.");
+  }
+  return { report, evidence };
+}
 
 export async function synthesize(
   scan: ScanResult,
@@ -528,55 +528,41 @@ export async function synthesize(
   onProgress?: ProgressFn,
 ): Promise<Synthesis> {
   const kind = detectIntegration(scan.meta, scan.files);
+  const ctx: ToolCtx = { owner: scan.meta.owner, repo: scan.meta.name };
 
   if (!isConfigured()) {
     throw new Error("No AI key is configured. Set OPENROUTER_API_KEY to run an investigation.");
   }
 
-  const messages = buildMessages(scan, grade, kind);
-  onProgress?.(80, "report", "Asking the AI to write your report…");
-  let lastReportPct = 80;
-  const onToken = (chars: number): void => {
-    const pct = Math.min(95, 82 + Math.round(chars / 200));
-    if (pct !== lastReportPct) {
-      lastReportPct = pct;
-      onProgress?.(pct, "report", "AI is writing your report…");
-    }
-  };
+  onProgress?.(60, "report", "The investigator is thinking and gathering evidence…");
 
-  // Primary model, with internal retries on transient failures.
   let usedModel = activeModel();
-  let text = await completeJson(messages, OUTPUT_SCHEMA, 3000, onToken, usedModel);
-
-  // Cascade to a backup model if the primary failed entirely after retries.
-  if (!text) {
+  let result: LoopResult;
+  try {
+    result = await runAgentLoop(scan, grade, kind, usedModel, ctx, onProgress);
+  } catch (err) {
+    console.warn(`[canary] primary model failed (${err instanceof Error ? err.message : "unknown"}); cascading to ${FALLBACK_MODEL}`);
+    onProgress?.(62, "report", "The first model hit trouble. Retrying with a backup…");
     usedModel = FALLBACK_MODEL;
-    onProgress?.(82, "report", "The first model stalled. Trying a backup…");
-    console.warn(`[canary] primary model failed; cascading to ${FALLBACK_MODEL}`);
-    text = await completeJson(messages, OUTPUT_SCHEMA, 3000, undefined, usedModel);
+    result = await runAgentLoop(scan, grade, kind, usedModel, ctx, onProgress);
   }
 
-  const raw = text ? extractJsonObject(text) : null;
-  const model = validateModelOutput(raw, grade);
-
-  if (!model) {
-    throw new Error("The AI model couldn't produce a report after several tries. Please try again.");
-  }
-
+  const { report, evidence } = result;
   return {
-    verdict: model.verdict,
-    score: model.score,
-    headline: model.headline,
-    summary: model.summary,
-    howToUse: model.howToUse,
+    verdict: report.verdict,
+    score: report.score,
+    headline: report.headline,
+    summary: report.summary,
+    howToUse: report.howToUse,
     integration:
-      kind && model.integrationInstructions
-        ? { kind, instructions: model.integrationInstructions }
+      kind && report.integrationInstructions
+        ? { kind, instructions: report.integrationInstructions }
         : kind
           ? { kind, instructions: integrationTemplate(kind, scan.meta) }
           : null,
-    goodSignals: model.goodSignals,
-    findings: model.findings,
+    goodSignals: report.goodSignals,
+    findings: report.findings,
+    evidence,
     llmUsed: true,
     model: { provider: "OpenRouter", model: usedModel },
   };

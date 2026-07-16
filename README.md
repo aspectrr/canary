@@ -86,40 +86,38 @@ This is a Next.js 16 app (App Router). Everything happens server-side.
 GitHub URL
    │
    ▼
-1. GitHub API ── repo metadata + recursive file tree + recent issues
+1. GitHub API ── repo metadata + recursive file tree
 2. Select files ── manifests, README, and a capped sample of source
                    (test/fixture/example/doc paths are excluded to avoid noise)
-3. Intake ────── five parallel evidence streams:
-   • Scanners     ── deterministic rules → findings (install hooks, obfuscation,
-                     secrets/endpoints, dependency sources, repo signals…)
-   • OSV.dev      ── known CVEs/advisories for RUNTIME dependencies (batch query)
-   • Issues       ── recent issues, with security-related ones flagged
-   • Discussions  ── recent GitHub Discussions (GraphQL), security-related flagged
-   • Web search   ── Brave Search for independent reputation signals
-4. Grader ────── findings (incl. known vulns) → verdict + score as a prior
-5. Synthesizer ─ all of the above + a cybersecurity checklist → the AI model
-                   (via OpenRouter) writes the FULL structured report as JSON.
-                   Output is validated, score-clamped to the verdict band, and
-                   safety-merged so no critical/high red flag is ever dropped.
-                   Retries transient failures, cascades to a backup model, and
-                   surfaces an error if everything fails (never a silent
-                   rules-only fallback). Integration kind (MCP server, CLI,
-                   library…) is detected and setup steps generated for
-                   Claude / Claude Code / Codex / Cursor.
+3. Local baseline ── deterministic scanners → findings (install hooks,
+                     obfuscation, secrets/endpoints, dependency/repo signals…)
+                     and a preliminary verdict + score as a prior.
+4. Agent loop ──── the AI model drives its own investigation with three tools:
+   • web_search  ── Brave Search: reputation, CVEs, supply-chain incidents
+   • fetch_url   ── read any web page (advisories, registries, docs)
+   • github      ── GitHub REST API, scoped to this repo (issues, PRs, files)
+   It decides what to check and how deep to go, then writes the full
+   structured JSON report. Output is validated, score-clamped to the verdict
+   band, and safety-merged so no critical/high red flag is dropped.
+5. Reliability ── retries transient failures, cascades to a backup model,
+   and surfaces a clear error if everything fails. Integration kind (MCP
+   server, CLI, library…) is detected and setup steps generated for
+   Claude / Claude Code / Codex / Cursor.
 ```
 
-The model is the report author; the deterministic layer is the evidence floor
-and the guardrail. The model can adjust the verdict when the issues, vulns, or
-repo signals justify it, but it can never invent safety or drop a serious flag.
+The model isn't handed force-gathered data. It gets a scan baseline, then
+investigates on its own. It can adjust the verdict when its findings justify
+it, but it can never invent safety or drop a serious flag. The report includes
+an evidence trail of every tool call it made.
 
 ### Design choices worth knowing
 
-- **Deterministic evidence, model-authored report.** The scanners, OSV.dev,
-  issue/discussion intake, and web search gather ground truth; the
-  verdict/score are computed as a strong prior; the model then writes the full
-  structured JSON report from all of it. The model's output is validated, its
-  score is clamped into the verdict's band, and any critical/high red flag it
-  drops is re-added.
+- **Agentic investigation, not force-fed data.** The model gets a local scan
+  baseline (metadata, README, code-scan findings, a preliminary score), then
+  drives its own research with web_search, fetch_url, and github tools. It
+  decides what to verify and how deep to go. The report carries an evidence
+  trail of every tool call. A guardrail nudges it back if it tries to write
+  the report before investigating at all.
 - **Reading vs. exfiltrating.** Reading all of `process.env` or touching
   credential files is *medium* (suspicious but not definitive — some tools do
   it legitimately). Sending data to a Discord/Telegram webhook or a raw IP is

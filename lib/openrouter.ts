@@ -244,3 +244,130 @@ export async function completeJson(
     model,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Tool-calling (agentic) path — non-streaming.
+// ---------------------------------------------------------------------------
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+/** An assistant turn that may carry content, tool calls, or both. */
+export interface AssistantMessage {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: ToolCall[];
+}
+
+/** A tool-result message appended after executing a tool call. */
+export interface ToolMessage {
+  role: "tool";
+  tool_call_id: string;
+  content: string;
+}
+
+export type AgentMessage = ChatMessage | AssistantMessage | ToolMessage;
+
+export interface ChatTurnOptions {
+  /** OpenAI-style tool definitions. Omit to disable tool use. */
+  tools?: unknown[];
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+interface RawChoice {
+  message?: {
+    content?: string | null;
+    tool_calls?: ToolCall[];
+  } | null;
+}
+
+/** One non-streaming attempt. Throws OrError on failure. */
+async function chatOnce(
+  messages: AgentMessage[],
+  opts: ChatTurnOptions,
+  timeoutMs: number,
+): Promise<AssistantMessage> {
+  const base = process.env.OPENROUTER_BASE_URL ?? DEFAULT_BASE;
+  const body: Record<string, unknown> = {
+    model: opts.model ?? activeModel(),
+    messages,
+    max_tokens: opts.maxTokens ?? 2048,
+    temperature: opts.temperature ?? 0.3,
+    stream: false,
+  };
+  if (opts.tools) {
+    body.tools = opts.tools;
+    body.tool_choice = "auto";
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw new OrError(
+      `OpenRouter: network error — ${err instanceof Error ? err.message : "unknown"}`,
+      true,
+    );
+  }
+
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 200);
+    } catch {
+      /* ignore */
+    }
+    throw new OrError(
+      `OpenRouter ${res.status}: ${detail || res.statusText}`,
+      RETRYABLE_STATUS.has(res.status),
+      res.status,
+    );
+  }
+
+  const data = (await res.json()) as { choices?: RawChoice[]; error?: { message?: string } };
+  if (data.error) {
+    throw new OrError(`OpenRouter error: ${data.error.message ?? "unknown"}`, true);
+  }
+  const msg = data.choices?.[0]?.message;
+  if (!msg) throw new OrError("OpenRouter: empty completion", true);
+  return {
+    role: "assistant",
+    content: msg.content ?? null,
+    tool_calls: msg.tool_calls,
+  };
+}
+
+/**
+ * Non-streaming chat completion with tool-calling support, for the agent loop.
+ * Retries transient failures. Throws OrError if a non-retryable error occurs
+ * or every retry is exhausted (caller cascades to a backup model).
+ */
+export async function chatComplete(
+  messages: AgentMessage[],
+  opts: ChatTurnOptions,
+  timeoutMs = 120_000,
+): Promise<AssistantMessage> {
+  let lastErr: OrError | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      return await chatOnce(messages, opts, timeoutMs);
+    } catch (err) {
+      if (!(err instanceof OrError)) throw err;
+      lastErr = err;
+      if (!err.retryable) throw err;
+      if (attempt === MAX_ATTEMPTS - 1) break;
+      await sleep(backoffMs(attempt, err.status === 429));
+    }
+  }
+  throw lastErr ?? new OrError("OpenRouter: failed after retries", false);
+}
