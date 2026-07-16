@@ -6,9 +6,9 @@ export default function Home() {
       <div className="mx-auto w-full max-w-3xl">
         {/* Wordmark row */}
         <header className="flex items-center justify-between">
-          <span className="text-sm font-semibold uppercase tracking-[0.22em]">Aspectrr</span>
+          <span className="text-sm font-semibold uppercase tracking-[0.22em]">Safety check</span>
           <span className="text-xs uppercase tracking-[0.18em] text-ink/45">
-            Open-source safety
+            Open-source
           </span>
         </header>
 
@@ -19,8 +19,8 @@ export default function Home() {
           </h1>
 
           <p className="mt-5 max-w-xl text-pretty text-lg leading-relaxed text-ink/70">
-            Paste a GitHub link. Aspectrr reads the code, spots the red flags,
-            and tells you in plain English whether you can trust it.
+            Paste a GitHub link. We read the code, spot the red flags, and tell
+            you in plain English whether you can trust it.
           </p>
         </div>
 

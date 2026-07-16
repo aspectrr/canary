@@ -1,5 +1,5 @@
 /**
- * Shared types for the Aspectrr investigation engine.
+ * Shared types for the safety-check investigation engine.
  *
  * The engine is split into three layers:
  *   1. Deterministic scanners  -> produce structured `Finding[]` evidence

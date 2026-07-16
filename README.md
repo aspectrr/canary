@@ -1,10 +1,10 @@
-# Aspectrr
+# Open-source safety check
 
 **Is this open-source project safe to use?**
 
-Aspectrr is a web app for non-technical people. Paste a GitHub repository URL
-and it reads the code, checks for malware red flags, and explains — in plain
-English — whether you can trust it, what it does, and how to use it (including
+This is a web app for non-technical people. Paste a GitHub repository URL
+and it reads the code, checks for malware red flags, and explains in plain
+English whether you can trust it, what it does, and how to use it (including
 how to wire it into Claude Desktop, Claude Code, Codex, or Cursor when
 relevant).
 
@@ -72,7 +72,7 @@ token with public read-only access is enough.
 
 ## How it works
 
-Aspectrr is a Next.js 16 app (App Router). Everything happens server-side.
+This is a Next.js 16 app (App Router). Everything happens server-side.
 
 ```
 GitHub URL

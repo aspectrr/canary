@@ -178,7 +178,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   const t0 = Date.now();
   const lap = (label: string, detail?: string): void => {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[aspectrr] ${elapsed.padStart(6)}s  ${label}${detail ? ` — ${detail}` : ""}`);
+    console.log(`[safety-check] ${elapsed.padStart(6)}s  ${label}${detail ? ` — ${detail}` : ""}`);
   };
 
   onProgress?.(3, "resolve", "Looking up the repository…");
@@ -190,7 +190,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   }
 
   const { owner, repo } = parsed;
-  console.log(`[aspectrr] ── investigating ${owner}/${repo} ──────────────`);
+  console.log(`[safety-check] ── investigating ${owner}/${repo} ──────────────`);
 
   // 1. Metadata + language breakdown.
   onProgress?.(12, "fetch-meta", "Fetching repository details…", `${owner}/${repo}`);
@@ -287,7 +287,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   onProgress?.(100, "complete", "Done!");
   lap("AI report", `${synth.llmUsed ? (synth.model?.model ?? "model") : "rules-only (no AI)"}`);
   console.log(
-    `[aspectrr] ── done in ${((Date.now() - t0) / 1000).toFixed(1)}s — verdict: ${synth.verdict} (${synth.score}) ──`,
+    `[safety-check] ── done in ${((Date.now() - t0) / 1000).toFixed(1)}s — verdict: ${synth.verdict} (${synth.score}) ──`,
   );
 
   return {
