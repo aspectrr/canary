@@ -1,14 +1,30 @@
 import { InvestigatorForm } from "@/components/InvestigatorForm";
 
+/** Canary wordmark glyph: a perched songbird in ink. Transparent background. */
+function CanaryMark({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 64 64" fill="currentColor" aria-hidden>
+      <path d="M9 13 L23 31 L15 40 Z" />
+      <circle cx="34" cy="39" r="14" />
+      <circle cx="46" cy="25" r="9" />
+      <path d="M53 23 L61 26 L53 29 Z" />
+      <circle cx="48" cy="23" r="2.2" fill="#efedea" />
+    </svg>
+  );
+}
+
 export default function Home() {
   return (
     <main className="flex min-h-screen flex-col px-5 py-10 sm:px-8 sm:py-14">
       <div className="mx-auto w-full max-w-3xl">
         {/* Wordmark row */}
         <header className="flex items-center justify-between">
-          <span className="text-sm font-semibold uppercase tracking-[0.22em]">Safety check</span>
+          <span className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.22em]">
+            <CanaryMark className="h-5 w-5" />
+            Canary
+          </span>
           <span className="text-xs uppercase tracking-[0.18em] text-ink/45">
-            Open-source
+            Open-source safety
           </span>
         </header>
 

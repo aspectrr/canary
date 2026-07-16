@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Is this open-source project safe to use?",
+  title: "Canary: is this open-source project safe to use?",
   description:
-    "Paste a GitHub URL and get a plain-English safety report. We read the code, flag the malware signals, and tell you if you can trust it.",
+    "Paste a GitHub URL and get a plain-English safety report. Canary reads the code, flags the malware signals, and tells you if you can trust it.",
 };
 
 export default function RootLayout({

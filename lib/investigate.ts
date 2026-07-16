@@ -1,4 +1,5 @@
 import {
+  getDiscussions,
   getLanguages,
   getMeta,
   getRawFile,
@@ -8,8 +9,9 @@ import {
 } from "./github";
 import { grade } from "./grade";
 import { synthesize, vulnsAsFindings } from "./llm";
-import { summarizeIssues } from "./issues";
+import { summarizeDiscussions, summarizeIssues } from "./issues";
 import { queryVulnerabilities } from "./osv";
+import { searchProjectReputation } from "./brave";
 import type { ProgressFn } from "./progress";
 import {
   DOC_FILES,
@@ -178,7 +180,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   const t0 = Date.now();
   const lap = (label: string, detail?: string): void => {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[safety-check] ${elapsed.padStart(6)}s  ${label}${detail ? ` — ${detail}` : ""}`);
+    console.log(`[canary] ${elapsed.padStart(6)}s  ${label}${detail ? ` — ${detail}` : ""}`);
   };
 
   onProgress?.(3, "resolve", "Looking up the repository…");
@@ -190,7 +192,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   }
 
   const { owner, repo } = parsed;
-  console.log(`[safety-check] ── investigating ${owner}/${repo} ──────────────`);
+  console.log(`[canary] ── investigating ${owner}/${repo} ──────────────`);
 
   // 1. Metadata + language breakdown.
   onProgress?.(12, "fetch-meta", "Fetching repository details…", `${owner}/${repo}`);
@@ -238,17 +240,40 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
     ? readme.content.slice(0, 4000).replace(/\r/g, "")
     : null;
 
-  // 6. Scanners + vulnerability (OSV) + issue (GitHub) intake, in parallel.
-  onProgress?.(50, "analyze", "Scanning for security issues…");
+  // 6. Static scan first (fast, synchronous), then parallel evidence intake.
+  onProgress?.(48, "scan", "Scanning code for security patterns…");
   const packages = collectPackages(files);
-  const [scanFindings, vulnerabilities, issueSummary] = await Promise.all([
-    Promise.resolve(runScans(meta, files, flags, totalFilesInRepo)),
-    queryVulnerabilities(packages),
-    getRecentIssues(owner, repo).then(summarizeIssues),
-  ]);
+  const scanFindings = runScans(meta, files, flags, totalFilesInRepo);
   lap("static scan", `${scanFindings.length} findings`);
-  lap("vuln check (OSV)", `${vulnerabilities.length} known vulns`);
-  lap("issue review", `${issueSummary?.securityRelated.length ?? 0} security-related`);
+  const topSignal = scanFindings[0]?.title ?? "";
+
+  onProgress?.(52, "evidence", "Gathering evidence from multiple sources…");
+  // Each source fires its own progress event with a distinct stage as it
+  // resolves, so the UI shows real evidence sources completing one-by-one.
+  const [vulnerabilities, issueSummary, discussions, webResults] = await Promise.all([
+    queryVulnerabilities(packages).then((v) => {
+      onProgress?.(56, "evidence-vuln", `Checked the vulnerability database — ${v.length} known issue${v.length === 1 ? "" : "s"}`);
+      lap("vuln check (OSV)", `${v.length} known vulns`);
+      return v;
+    }),
+    getRecentIssues(owner, repo).then((raw) => {
+      const s = summarizeIssues(raw);
+      onProgress?.(58, "evidence-issues", `Reviewed ${s.total} GitHub issues — ${s.securityRelated.length} about security`);
+      lap("issue review", `${s.securityRelated.length} security-related`);
+      return s;
+    }),
+    getDiscussions(owner, repo).then((raw) => {
+      const d = summarizeDiscussions(raw);
+      onProgress?.(60, "evidence-discussions", d ? `Reviewed ${d.total} discussions` : "Discussions not enabled on this repo");
+      lap("discussions", d ? `${d.total} threads` : "disabled");
+      return d;
+    }),
+    searchProjectReputation(meta.fullName, topSignal).then((w) => {
+      onProgress?.(63, "evidence-web", `Searched the web — ${w.length} reputation result${w.length === 1 ? "" : "s"}`);
+      lap("web search", `${w.length} results`);
+      return w;
+    }),
+  ]);
 
   // Fold known dependency vulns into the evidence so they influence the grade.
   const vulnFindings = vulnsAsFindings(vulnerabilities);
@@ -269,6 +294,8 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
     packages: collectPackages(files),
     vulnerabilities,
     issues: issueSummary,
+    discussions,
+    webResults,
   };
 
   // 7. Synthesize (model-authored report, with deterministic fallback).
@@ -287,7 +314,7 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
   onProgress?.(100, "complete", "Done!");
   lap("AI report", `${synth.llmUsed ? (synth.model?.model ?? "model") : "rules-only (no AI)"}`);
   console.log(
-    `[safety-check] ── done in ${((Date.now() - t0) / 1000).toFixed(1)}s — verdict: ${synth.verdict} (${synth.score}) ──`,
+    `[canary] ── done in ${((Date.now() - t0) / 1000).toFixed(1)}s — verdict: ${synth.verdict} (${synth.score}) ──`,
   );
 
   return {
@@ -305,6 +332,8 @@ export async function investigate(input: string, onProgress?: ProgressFn): Promi
     integration: synth.integration,
     vulnerabilities,
     issues: scanResult.issues,
+    discussions: scanResult.discussions,
+    webResults: scanResult.webResults,
     scannedFiles: files.length,
     totalFilesInRepo,
     partialScan,

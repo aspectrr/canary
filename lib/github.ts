@@ -262,3 +262,50 @@ export async function getRawFile(
     return null;
   }
 }
+
+export interface DiscussionRaw {
+  number: number;
+  title: string;
+  url: string;
+}
+
+/**
+ * Fetch recent GitHub Discussions via the GraphQL API.
+ *
+ * Discussions are a separate feature from Issues and only exist via GraphQL.
+ * Returns null when discussions are disabled for the repo (the `discussions`
+ * field is null) or on any error. Never throws.
+ */
+export async function getDiscussions(
+  owner: string,
+  repo: string,
+): Promise<{ total: number; nodes: DiscussionRaw[] } | null> {
+  const query = `query Discussions($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      discussions(first: 30, orderBy: {field: UPDATED_AT, direction: DESC}) {
+        totalCount
+        nodes { number title url }
+      }
+    }
+  }`;
+  try {
+    const res = await fetch(`${API}/graphql`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ query, variables: { owner, name: repo } }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      data?: {
+        repository?: {
+          discussions?: { totalCount: number; nodes: DiscussionRaw[] } | null;
+        } | null;
+      } | null;
+    };
+    const d = data.data?.repository?.discussions;
+    if (!d) return null;
+    return { total: d.totalCount, nodes: d.nodes ?? [] };
+  } catch {
+    return null;
+  }
+}

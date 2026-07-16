@@ -20,8 +20,12 @@ import type {
  * deterministic scanner findings (good signals + concerns), GitHub issues
  * signals, known dependency vulnerabilities (OSV.dev), the detected
  * integration kind, and an explicit cybersecurity checklist — and it returns a
- * structured JSON report. We validate, clamp, and safety-merge its output, and
- * degrade to a deterministic report when no key is set or the model fails.
+ * structured JSON report. We validate, clamp, and safety-merge its output.
+ *
+ * Reliability: the call retries transient failures (rate limits, server
+ * errors, stalls, network blips) and cascades to a fallback model if the
+ * primary fails entirely. Only if everything fails do we surface an error to
+ * the caller — we never silently fall back to a rules-only report.
  *
  * The deterministic verdict/score are always computed and passed in as a
  * strong prior; the model may adjust them when the issues/vulns/repo signals
@@ -158,50 +162,6 @@ Repo: <${repo}>`;
     default:
       return `Open the README for setup instructions tailored to this project: <${repo}>`;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic fallbacks (used when no key, or when the model fails).
-// ---------------------------------------------------------------------------
-
-function fallbackSummary(meta: RepoMeta, readme: string | null): string {
-  const parts: string[] = [];
-  const what = meta.description?.trim();
-  parts.push(
-    what
-      ? `**${meta.fullName}** is described as: ${what}.`
-      : `**${meta.fullName}** is a${meta.primaryLanguage ? ` ${meta.primaryLanguage}` : ""} project on GitHub.`,
-  );
-  if (readme) {
-    const firstLines = readme.slice(0, 400).replace(/[#>*`]/g, "").trim();
-    if (firstLines) parts.push(firstLines);
-  }
-  parts.push(
-    `It has ${meta.stars.toLocaleString()} star${meta.stars === 1 ? "" : "s"} and is written primarily in ${meta.primaryLanguage ?? "a mix of languages"}.`,
-  );
-  return parts.join("\n\n");
-}
-
-function fallbackHowToUse(readme: string | null): string {
-  if (!readme) {
-    return "The repository has no README, so there are no setup steps to show. Open the repo on GitHub to look for install instructions in other files.";
-  }
-  return "See the **Installation** or **Getting Started** section of the project's README for setup steps. (A human-readable version of those steps appears here when an AI model is connected.)";
-}
-
-function deterministic(scan: ScanResult, grade: Grade, kind: IntegrationGuide["kind"] | null): Synthesis {
-  return {
-    verdict: grade.verdict,
-    score: grade.score,
-    headline: grade.headline,
-    summary: fallbackSummary(scan.meta, scan.readmeExcerpt),
-    howToUse: fallbackHowToUse(scan.readmeExcerpt),
-    integration: kind ? { kind, instructions: integrationTemplate(kind, scan.meta) } : null,
-    goodSignals: grade.goodSignals,
-    findings: grade.concerns,
-    llmUsed: false,
-    model: null,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +391,7 @@ function buildMessages(scan: ScanResult, grade: Grade, kind: IntegrationGuide["k
 
   const system = `You are a friendly, clear-eyed security guide. You write a plain-English safety report for a NON-TECHNICAL person deciding whether to use an open-source project. Imagine a knowledgeable friend who's good with computers, explaining things patiently and honestly.
 
-You receive structured intelligence gathered automatically: repository metadata, a README excerpt, the project's structure, the detected integration type, an automated scanner's verdict/score plus its findings (good signals and concerns), recent GitHub issues (with security-related ones flagged), known vulnerabilities in the project's dependencies, and a cybersecurity checklist.
+You receive structured intelligence gathered automatically: repository metadata, a README excerpt, the project's structure, the detected integration type, an automated scanner's verdict/score plus its findings (good signals and concerns), recent GitHub issues (with security-related ones flagged), recent GitHub discussions (with security-related ones flagged), known vulnerabilities in the project's dependencies, independent web-search results about the project's reputation, and a cybersecurity checklist.
 
 Synthesize ALL of it into ONE report as JSON.
 
@@ -458,7 +418,7 @@ FIELDS:
 - headline: one warm, specific sentence capturing the verdict.
 - summary: what the project IS and DOES (see DESCRIBING THE PROJECT above).
 - howToUse: concrete install/use steps from the README. If the project has multiple parts, give the general setup pattern and point readers to the README for the specifics of each part. Never invent commands or package names that aren't in the README or projectStructure.
-- findings: everything worth checking — scanner concerns, known vulns, issue-tracker warnings. Each gets a plain-English title and an explanation of why it matters and what (if anything) to do. Keep severe items; trim trivial duplicates.
+- findings: everything worth checking — scanner concerns, known vulns, issue-tracker warnings, discussion warnings, and anything the web search turned up about the project's reputation. Each gets a plain-English title and an explanation of why it matters and what (if anything) to do. Keep severe items; trim trivial duplicates.
 - goodSignals: positive signs (popularity, maintenance, license, tests, CI, docs, etc.).
 - Use the cybersecurity checklist as your lens for what to look for.
 
@@ -486,6 +446,21 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
         })),
         recentSample: scan.issues.recent.slice(0, 4).map((i) => ({ title: i.title, state: i.state })),
       }
+    : null;
+
+  const discussions = scan.discussions
+    ? {
+        total: scan.discussions.total,
+        securityRelated: scan.discussions.securityRelated.map((d) => ({
+          number: d.number,
+          title: d.title,
+          url: d.url,
+        })),
+      }
+    : null;
+
+  const webResults = scan.webResults.length
+    ? scan.webResults.map((w) => ({ title: w.title, url: w.url, snippet: w.snippet, source: w.source }))
     : null;
 
   const shape = deriveProjectShape(scan.files);
@@ -528,6 +503,8 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
     concerns: grade.concerns.map((c) => ({ severity: c.severity, title: c.title, detail: c.detail, file: c.file ?? null })),
     knownVulnerabilities: vulns,
     issues,
+    discussions,
+    webSearchResults: webResults,
     cybersecurityChecklist: checklistForPrompt(),
   });
 
@@ -541,6 +518,10 @@ Output ONLY a single JSON object. No prose, no markdown fences.`;
 // Public entrypoint.
 // ---------------------------------------------------------------------------
 
+/** Backup model tried if the primary model fails every retry. Keep it fast
+ * and broadly available so the cascade reliably rescues a flaky primary. */
+const FALLBACK_MODEL = process.env.OPENROUTER_FALLBACK_MODEL ?? "google/gemini-2.5-flash";
+
 export async function synthesize(
   scan: ScanResult,
   grade: Grade,
@@ -549,26 +530,37 @@ export async function synthesize(
   const kind = detectIntegration(scan.meta, scan.files);
 
   if (!isConfigured()) {
-    return deterministic(scan, grade, kind);
+    throw new Error("No AI key is configured. Set OPENROUTER_API_KEY to run an investigation.");
   }
 
   const messages = buildMessages(scan, grade, kind);
-  onProgress?.(80, "report", "Asking the AI to write your report…", activeModel());
+  onProgress?.(80, "report", "Asking the AI to write your report…");
   let lastReportPct = 80;
-  const text = await completeJson(messages, OUTPUT_SCHEMA, 3000, (chars) => {
-    // Inch the bar from 82% to 95% as tokens stream in (~3000 char report).
-    // Only emit when the rounded percentage changes to avoid flooding the stream.
+  const onToken = (chars: number): void => {
     const pct = Math.min(95, 82 + Math.round(chars / 200));
     if (pct !== lastReportPct) {
       lastReportPct = pct;
-      onProgress?.(pct, "report", "AI is writing your report…", undefined);
+      onProgress?.(pct, "report", "AI is writing your report…");
     }
-  });
+  };
+
+  // Primary model, with internal retries on transient failures.
+  let usedModel = activeModel();
+  let text = await completeJson(messages, OUTPUT_SCHEMA, 3000, onToken, usedModel);
+
+  // Cascade to a backup model if the primary failed entirely after retries.
+  if (!text) {
+    usedModel = FALLBACK_MODEL;
+    onProgress?.(82, "report", "The first model stalled. Trying a backup…");
+    console.warn(`[canary] primary model failed; cascading to ${FALLBACK_MODEL}`);
+    text = await completeJson(messages, OUTPUT_SCHEMA, 3000, undefined, usedModel);
+  }
+
   const raw = text ? extractJsonObject(text) : null;
   const model = validateModelOutput(raw, grade);
 
   if (!model) {
-    return deterministic(scan, grade, kind);
+    throw new Error("The AI model couldn't produce a report after several tries. Please try again.");
   }
 
   return {
@@ -586,6 +578,6 @@ export async function synthesize(
     goodSignals: model.goodSignals,
     findings: model.findings,
     llmUsed: true,
-    model: { provider: "OpenRouter", model: activeModel() },
+    model: { provider: "OpenRouter", model: usedModel },
   };
 }

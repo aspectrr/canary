@@ -297,6 +297,18 @@ export function ReportView({ report }: { report: Report }) {
         </section>
       )}
 
+      {/* What we checked — evidence sources worked through */}
+      <section>
+        <SectionLabel>What we checked</SectionLabel>
+        <ul className="grid gap-x-6 gap-y-2 text-sm text-ink/70 sm:grid-cols-2">
+          <EvidenceItem label="Source code" value={`${report.scannedFiles.toLocaleString()} file${report.scannedFiles === 1 ? "" : "s"}${report.partialScan ? " (partial scan)" : ""}`} />
+          <EvidenceItem label="Known vulnerabilities" value={`${report.vulnerabilities.length} found`} />
+          <EvidenceItem label="GitHub issues" value={report.issues ? `${report.issues.securityRelated.length} security-related of ${report.issues.total}` : "none"} />
+          <EvidenceItem label="Discussions" value={report.discussions ? `${report.discussions.total} threads` : "not enabled"} />
+          <EvidenceItem label="Web reputation" value={`${report.webResults.length} result${report.webResults.length === 1 ? "" : "s"}`} />
+        </ul>
+      </section>
+
       {/* Footer */}
       <footer className="space-y-1.5 border-t border-ink/15 pt-4 font-mono text-[11px] leading-relaxed text-ink/40">
         <p>{report.disclaimer}</p>
@@ -305,8 +317,8 @@ export function ReportView({ report }: { report: Report }) {
           {report.totalFilesInRepo.toLocaleString()} files
           {report.partialScan ? " (partial scan)" : ""}
           {" · "}
-          {report.llmUsed && report.model
-            ? `report written by ${report.model.provider} ${report.model.model}`
+          {report.llmUsed
+            ? "report written by an LLM"
             : "rules-only report (no AI model connected)"}
           {" · "}generated {new Date(report.generatedAt).toLocaleString()}
         </p>
@@ -330,4 +342,13 @@ function labelForKind(kind: string): string {
     default:
       return "general project";
   }
+}
+
+function EvidenceItem({ label, value }: { label: string; value: string }) {
+  return (
+    <li className="flex items-baseline justify-between gap-3 border-b border-ink/10 pb-1">
+      <span className="text-ink/50">{label}</span>
+      <span className="text-right font-mono text-xs text-ink/80">{value}</span>
+    </li>
+  );
 }

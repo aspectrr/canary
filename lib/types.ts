@@ -127,6 +127,16 @@ export interface VulnHit {
   fixedIn?: string;
 }
 
+/** A web-search result (Brave Search API). Used to pull independent community /
+ * advisory signals about a project that aren't in the repo itself. */
+export interface WebResult {
+  title: string;
+  url: string;
+  snippet: string;
+  /** Source domain, e.g. "reddit.com" or "nvd.nist.gov". */
+  source: string;
+}
+
 /** A GitHub issue relevant to safety/maintenance. */
 export interface IssueRef {
   number: number;
@@ -147,6 +157,22 @@ export interface RepoIssues {
   recent: IssueRef[];
 }
 
+/** A GitHub Discussion (community Q&A, separate from Issues). */
+export interface DiscussionRef {
+  number: number;
+  title: string;
+  url: string;
+  securityRelated: boolean;
+}
+
+/** Summary of a repo's discussions (GraphQL endpoint; null if disabled). */
+export interface RepoDiscussions {
+  total: number;
+  /** Discussions mentioning security/vulns/malware/etc. */
+  securityRelated: DiscussionRef[];
+  recent: DiscussionRef[];
+}
+
 /** What the engine collected before synthesis. */
 export interface ScanResult {
   meta: RepoMeta;
@@ -159,6 +185,9 @@ export interface ScanResult {
   packages: PackageRef[];
   vulnerabilities: VulnHit[];
   issues: RepoIssues | null;
+  discussions: RepoDiscussions | null;
+  /** Independent web-search signals (Brave). Empty when search isn't configured. */
+  webResults: WebResult[];
 }
 
 
@@ -202,6 +231,10 @@ export interface Report {
   vulnerabilities: VulnHit[];
   /** Issue-tracker signals. */
   issues: RepoIssues | null;
+  /** Discussion-board signals. */
+  discussions: RepoDiscussions | null;
+  /** Independent web-search signals (Brave). Empty when search isn't configured. */
+  webResults: WebResult[];
   scannedFiles: number;
   totalFilesInRepo: number;
   partialScan: boolean;

@@ -1,5 +1,5 @@
-import type { IssueRef, RepoIssues } from "./types";
-import type { IssueRaw } from "./github";
+import type { DiscussionRef, IssueRef, RepoDiscussions, RepoIssues } from "./types";
+import type { DiscussionRaw, IssueRaw } from "./github";
 
 /** Keywords/labels that mark an issue as security-relevant. */
 const SEC_LABELS = [
@@ -74,6 +74,25 @@ export function summarizeIssues(raw: IssueRaw[]): RepoIssues {
   return {
     total: refs.length,
     open: refs.filter((r) => r.state === "open").length,
+    securityRelated: refs.filter((r) => r.securityRelated).slice(0, 8),
+    recent: refs.slice(0, 8),
+  };
+}
+
+/** Classify discussions the same way as issues. Discussions carry no labels
+ * in the minimal GraphQL query we run, so classification is title-only. */
+export function summarizeDiscussions(
+  raw: { total: number; nodes: DiscussionRaw[] } | null,
+): RepoDiscussions | null {
+  if (!raw) return null;
+  const refs: DiscussionRef[] = raw.nodes.map((d) => ({
+    number: d.number,
+    title: d.title,
+    url: d.url,
+    securityRelated: isSecurityRelated(d.title, []),
+  }));
+  return {
+    total: raw.total,
     securityRelated: refs.filter((r) => r.securityRelated).slice(0, 8),
     recent: refs.slice(0, 8),
   };

@@ -4,12 +4,14 @@
  * Docs: https://openrouter.ai/docs/api-reference/overview
  *
  * Env:
- *   OPENROUTER_API_KEY  (required for AI reports; without it the app uses
- *                        deterministic rules-only reports)
- *   OPENROUTER_MODEL    default "anthropic/claude-sonnet-4.5"
- *   OPENROUTER_BASE_URL default "https://openrouter.ai/api/v1"
- *   OPENROUTER_REFERER  optional HTTP-Referer for app attribution
- *   APP_TITLE           optional X-Title for app attribution
+ *   OPENROUTER_API_KEY        (required for AI reports)
+ *   OPENROUTER_MODEL          default "anthropic/claude-sonnet-4.5"
+ *   OPENROUTER_FALLBACK_MODEL default "google/gemini-2.5-flash" (used if the
+ *                             primary model fails every retry)
+ *   OPENROUTER_BASE_URL       default "https://openrouter.ai/api/v1"
+ *   OPENROUTER_TIMEOUT_MS     stall-detection window, default 120000
+ *   OPENROUTER_REFERER        optional HTTP-Referer for app attribution
+ *   APP_TITLE                 optional X-Title for app attribution
  */
 
 const DEFAULT_BASE = "https://openrouter.ai/api/v1";
@@ -35,6 +37,8 @@ export interface CompletionOptions {
   responseFormat?: ResponseFormat;
   maxTokens?: number;
   temperature?: number;
+  /** Override the active model for this call (used by the model cascade). */
+  model?: string;
   /** Called as the stream produces tokens, with the running character count —
    * lets the caller drive a progress bar during generation. */
   onToken?: (totalChars: number) => void;
@@ -62,22 +66,36 @@ function headers(): Record<string, string> {
 }
 
 /**
- * Request a chat completion via streaming and return the accumulated text.
- *
- * Uses stream:true so the connection stays alive as long as the model is
- * actively producing tokens. The timeout is a STALL detector (abort if no
- * data arrives for `stallMs`), not a hard total cap — so slow models like
- * Kimi k2.5 (which varies from 56s to 120s+) won't get cut off mid-generation.
- *
- * Returns null on any failure (caller falls back to deterministic report).
+ * A failure from an OpenRouter call, classified so the retry loop and the
+ * model cascade can decide what to do. Retryable: rate limits (429), server
+ * errors (5xx), timeouts/stalls, network blips. Non-retryable: auth (401),
+ * bad request (400), model not found (404) — retrying won't help.
  */
-export async function complete(
-  opts: CompletionOptions,
-  stallMs = Number(process.env.OPENROUTER_TIMEOUT_MS) || 120_000,
-): Promise<string | null> {
+export class OrError extends Error {
+  retryable: boolean;
+  status?: number;
+  constructor(message: string, retryable: boolean, status?: number) {
+    super(message);
+    this.name = "OrError";
+    this.retryable = retryable;
+    this.status = status;
+  }
+}
+
+const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function backoffMs(attempt: number, rateLimited: boolean): number {
+  const base = [1500, 4000, 8000][attempt] ?? 8000;
+  return (rateLimited ? base * 2 : base) + Math.floor(Math.random() * 500);
+}
+
+/** One streaming attempt. Throws OrError on any failure; returns text on success. */
+async function completeOnce(opts: CompletionOptions, stallMs: number): Promise<string> {
   const base = process.env.OPENROUTER_BASE_URL ?? DEFAULT_BASE;
   const body: Record<string, unknown> = {
-    model: activeModel(),
+    model: opts.model ?? activeModel(),
     messages: opts.messages,
     max_tokens: opts.maxTokens ?? 2048,
     temperature: opts.temperature ?? 0.2,
@@ -86,10 +104,15 @@ export async function complete(
   if (opts.responseFormat) body.response_format = opts.responseFormat;
 
   const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), stallMs);
+  let abortedByStall = false;
+  const arm = (): void => {
+    abortedByStall = true;
+    controller.abort();
+  };
+  let timer: ReturnType<typeof setTimeout> = setTimeout(arm, stallMs);
   const resetTimer = (): void => {
     clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(), stallMs);
+    timer = setTimeout(arm, stallMs);
   };
 
   try {
@@ -100,8 +123,20 @@ export async function complete(
       signal: controller.signal,
     });
 
-    if (!res.ok) return null;
-    if (!res.body) return null;
+    if (!res.ok) {
+      let detail = "";
+      try {
+        detail = (await res.text()).slice(0, 200);
+      } catch {
+        /* ignore */
+      }
+      throw new OrError(
+        `OpenRouter ${res.status}: ${detail || res.statusText}`,
+        RETRYABLE_STATUS.has(res.status),
+        res.status,
+      );
+    }
+    if (!res.body) throw new OrError("OpenRouter: empty response body", true);
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -127,24 +162,65 @@ export async function complete(
             choices?: { delta?: { content?: string | null } }[];
             error?: { message?: string };
           };
-          if (chunk.error) return null;
+          if (chunk.error) {
+            throw new OrError(`OpenRouter stream error: ${chunk.error.message ?? "unknown"}`, true);
+          }
           const delta = chunk.choices?.[0]?.delta?.content;
           if (typeof delta === "string") {
             fullContent += delta;
             opts.onToken?.(fullContent.length);
           }
-        } catch {
+        } catch (e) {
+          if (e instanceof OrError) throw e;
           /* ignore partial/malformed SSE lines */
         }
       }
     }
 
-    return fullContent || null;
-  } catch {
-    return null;
+    if (!fullContent) throw new OrError("OpenRouter: empty completion", true);
+    return fullContent;
+  } catch (err) {
+    if (err instanceof OrError) throw err;
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new OrError(
+        abortedByStall ? "OpenRouter: generation stalled (no tokens for the timeout window)" : "OpenRouter: aborted",
+        true,
+      );
+    }
+    throw new OrError(`OpenRouter: network error — ${err instanceof Error ? err.message : "unknown"}`, true);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Streaming completion with automatic retries on transient failures (rate
+ * limits, server errors, stalls, network blips). Returns null only if every
+ * attempt fails or the error is non-retryable (auth / bad request).
+ *
+ * The timeout is a STALL detector (abort if no data arrives for `stallMs`),
+ * not a hard total cap — slow models that keep producing tokens won't be cut
+ * off mid-generation.
+ */
+export async function complete(
+  opts: CompletionOptions,
+  stallMs = Number(process.env.OPENROUTER_TIMEOUT_MS) || 120_000,
+): Promise<string | null> {
+  let lastErr: OrError | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      return await completeOnce(opts, stallMs);
+    } catch (err) {
+      if (!(err instanceof OrError)) return null;
+      lastErr = err;
+      // Auth / bad request — retrying won't help.
+      if (!err.retryable) return null;
+      if (attempt === MAX_ATTEMPTS - 1) break;
+      await sleep(backoffMs(attempt, err.status === 429));
+    }
+  }
+  console.error(`[canary] OpenRouter failed after ${MAX_ATTEMPTS} attempts: ${lastErr?.message}`);
+  return null;
 }
 
 /**
@@ -158,11 +234,13 @@ export async function completeJson(
   _schema: { name: string; schema: object },
   maxTokens?: number,
   onToken?: (totalChars: number) => void,
+  model?: string,
 ): Promise<string | null> {
   return complete({
     messages,
     responseFormat: { type: "json_object" },
     maxTokens,
     onToken,
+    model,
   });
 }

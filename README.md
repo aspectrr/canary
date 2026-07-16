@@ -1,4 +1,4 @@
-# Open-source safety check
+# Canary
 
 **Is this open-source project safe to use?**
 
@@ -38,19 +38,20 @@ bun run selftest    # confirms the malware detectors fire on synthetic inputs
 
 ## Configuration
 
-All configuration is optional. The app runs without any of it.
+The app needs an OpenRouter key to run (without it, investigations error rather
+than silently falling back to a shallow rules-only report). Web search and a
+GitHub token are optional enrichments.
 
 Create a `.env.local` file (gitignored) in the project root:
 
-| Variable                | Required | What it does                                                                 |
-| ----------------------- | -------- | ---------------------------------------------------------------------------- |
-| `OPENROUTER_API_KEY`    | no       | When set, the full report is authored by an AI model via OpenRouter. When unset, rules-only reports. |
-| `OPENROUTER_MODEL`      | no       | Model to use. Default `anthropic/claude-sonnet-4.5`. Any OpenRouter model id. |
-| `OPENROUTER_TIMEOUT_MS` | no       | Stall timeout for the streaming model call (default `120000` = 2 min). Increase for very slow models. |
-| `OPENROUTER_BASE_URL`   | no       | Default `https://openrouter.ai/api/v1`. Override for a compatible gateway.   |
-| `OPENROUTER_REFERER`    | no       | Optional `HTTP-Referer` for app attribution on OpenRouter.                  |
-| `APP_TITLE`             | no       | Optional `X-Title` for app attribution on OpenRouter.                        |
-| `GITHUB_TOKEN`          | no       | GitHub token. Raises the API limit from 60 to 5000 requests/hour.            |
+| Variable                     | Required | What it does                                                          |
+| ---------------------------- | -------- | --------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY`         | **yes**  | Key for the AI model that writes the report. Get one at <https://openrouter.ai/keys>. |
+| `OPENROUTER_MODEL`           | no       | Primary model. Default `anthropic/claude-sonnet-4.5`.                 |
+| `OPENROUTER_FALLBACK_MODEL`  | no       | Backup model if the primary fails after retries. Default `google/gemini-2.5-flash`. |
+| `OPENROUTER_TIMEOUT_MS`      | no       | Stall-detection window (default `120000` = 2 min). Not a hard cap.    |
+| `BRAVE_SEARCH_API_KEY`       | no       | Brave Search key for web-reputation signals. Without it, search is skipped. |
+| `GITHUB_TOKEN`               | no       | Raises GitHub API limit from 60 to 5000 req/hour.                     |
 
 Example:
 
@@ -58,11 +59,18 @@ Example:
 # .env.local
 OPENROUTER_API_KEY=sk-or-...
 OPENROUTER_MODEL=anthropic/claude-sonnet-4.5
+BRAVE_SEARCH_API_KEY=BSA...
 GITHUB_TOKEN=github_pat_...
 ```
 
-Get an OpenRouter key at <https://openrouter.ai/keys>. A fine-grained GitHub
-token with public read-only access is enough.
+A fine-grained GitHub token with public read-only access is enough. Get a
+Brave Search key at <https://api.search.brave.com/> (free tier: 2,000
+queries/month).
+
+> **Reliability.** The model call retries transient failures (rate limits,
+> server errors, stalls, network blips) up to 3 times, then cascades to a
+> backup model. Only if everything fails does the user see an error — Canary
+> never silently drops to a rules-only report.
 
 > **Model speed matters.** The report is generated via streaming, but total
 > time depends on the model. Claude Sonnet, GPT-4o-mini, and Mistral finish in
@@ -81,18 +89,21 @@ GitHub URL
 1. GitHub API ── repo metadata + recursive file tree + recent issues
 2. Select files ── manifests, README, and a capped sample of source
                    (test/fixture/example/doc paths are excluded to avoid noise)
-3. Intake ────── three parallel evidence streams:
-   • Scanners   ── deterministic rules → findings (install hooks, obfuscation,
-                   secrets/endpoints, dependency sources, repo signals…)
-   • OSV.dev    ── known CVEs/advisories for RUNTIME dependencies (batch query)
-   • Issues     ── recent issues, with security-related ones flagged
+3. Intake ────── five parallel evidence streams:
+   • Scanners     ── deterministic rules → findings (install hooks, obfuscation,
+                     secrets/endpoints, dependency sources, repo signals…)
+   • OSV.dev      ── known CVEs/advisories for RUNTIME dependencies (batch query)
+   • Issues       ── recent issues, with security-related ones flagged
+   • Discussions  ── recent GitHub Discussions (GraphQL), security-related flagged
+   • Web search   ── Brave Search for independent reputation signals
 4. Grader ────── findings (incl. known vulns) → verdict + score as a prior
 5. Synthesizer ─ all of the above + a cybersecurity checklist → the AI model
                    (via OpenRouter) writes the FULL structured report as JSON.
                    Output is validated, score-clamped to the verdict band, and
                    safety-merged so no critical/high red flag is ever dropped.
-                   If no key is set or the model fails, a deterministic report
-                   is produced instead. Integration kind (MCP server, CLI,
+                   Retries transient failures, cascades to a backup model, and
+                   surfaces an error if everything fails (never a silent
+                   rules-only fallback). Integration kind (MCP server, CLI,
                    library…) is detected and setup steps generated for
                    Claude / Claude Code / Codex / Cursor.
 ```
@@ -104,11 +115,11 @@ repo signals justify it, but it can never invent safety or drop a serious flag.
 ### Design choices worth knowing
 
 - **Deterministic evidence, model-authored report.** The scanners, OSV.dev,
-  and issue intake gather ground truth; the verdict/score are computed as a
-  strong prior; the model then writes the full structured JSON report from all
-  of it. If no key is set or the call fails, you still get a complete
-  rules-only report. The model's output is validated, its score is clamped into
-  the verdict's band, and any critical/high red flag it drops is re-added.
+  issue/discussion intake, and web search gather ground truth; the
+  verdict/score are computed as a strong prior; the model then writes the full
+  structured JSON report from all of it. The model's output is validated, its
+  score is clamped into the verdict's band, and any critical/high red flag it
+  drops is re-added.
 - **Reading vs. exfiltrating.** Reading all of `process.env` or touching
   credential files is *medium* (suspicious but not definitive — some tools do
   it legitimately). Sending data to a Discord/Telegram webhook or a raw IP is
