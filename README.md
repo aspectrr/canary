@@ -189,8 +189,8 @@ Errors: `400` (bad URL), `404` (repo not found), `429` (GitHub rate limit),
 
 ### Fly.io (this app is deployed here)
 
-The app runs on Fly at `canary-collinpfeifer.fly.dev`, mounted at the
-`/canary` path prefix so it can share `collinpfeifer.dev` with another app.
+The app runs on Fly at `canary-collinpfeifer.fly.dev`, served at the root
+(served at the custom domain `canary.collinpfeifer.dev` once DNS is set up).
 
 Deploy updates:
 
@@ -210,43 +210,23 @@ flyctl secrets set -a canary-collinpfeifer GITHUB_TOKEN=github_pat_xxx
 (Other secrets — `OPENROUTER_API_KEY`, `BRAVE_SEARCH_API_KEY`, `OPENROUTER_MODEL`
 — are already set. Add or change any with the same `flyctl secrets set` command.)
 
-### Pointing collinpfeifer.dev/canary at the app
+### Custom domain (canary.collinpfeifer.dev)
 
-Because the apex serves another app, add a reverse-proxy rule there that
-forwards `/canary/*` to the Fly app **preserving the path** (do not strip the
-prefix; the Next.js basePath `/canary` expects to receive it).
+Added on Fly with `flyctl certs add`. Once you point DNS at the app, Fly
+provisions HTTPS automatically. Add these records at your DNS provider:
 
-**nginx:**
-
-```nginx
-location /canary/ {
-    proxy_pass https://canary-collinpfeifer.fly.dev;
-    proxy_set_header Host canary-collinpfeifer.fly.dev;
-    proxy_buffering off;   # required for SSE streaming progress
-}
+```
+A     canary.collinpfeifer.dev → 66.241.125.2
+AAAA  canary.collinpfeifer.dev → 2a09:8280:1::150:a6c1:0
 ```
 
-**Caddy:**
-
-```caddyfile
-collinpfeifer.dev {
-    handle_path /canary/* {
-        reverse_proxy https://canary-collinpfeifer.fly.dev
-    }
-}
-```
-
-Note: if your proxy strips the prefix (like Caddy's `handle_path`), use the
-plain `handle /canary/* { reverse_proxy ... }` form instead so the `/canary`
-prefix reaches the app. The agent's progress uses Server-Sent Events, so
-disable response buffering on the proxy.
+(A CNAME to `gm8y69o.canary-collinpfeifer.fly.dev` works too.) Check status
+with `flyctl certs check canary.collinpfeifer.dev -a canary-collinpfeifer`.
 
 ### Other hosts
 
 Any Node host works (Vercel, Railway, a VPS). The investigation can take a
-minute or two on slow models, so allow a generous request timeout. For a path
-prefix, set `NEXT_PUBLIC_BASE_PATH` at build time; for a subdomain or root,
-set it to an empty string.
+minute or two on slow models, so allow a generous request timeout.
 
 ```bash
 bun run build

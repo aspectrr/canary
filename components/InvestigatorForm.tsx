@@ -54,7 +54,7 @@ export function InvestigatorForm() {
     seenStagesRef.current = new Set();
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/investigate`, {
+      const res = await fetch("/api/investigate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: trimmed }),
