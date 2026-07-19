@@ -187,9 +187,66 @@ Errors: `400` (bad URL), `404` (repo not found), `429` (GitHub rate limit),
 
 ## Deployment
 
-Any Node host works (Vercel, Railway, Fly, a VPS). The investigation can take
-10–20s on large repos, so pick a plan with a generous request timeout (the
-route sets `maxDuration = 60`). Set the same env vars on your host.
+### Fly.io (this app is deployed here)
+
+The app runs on Fly at `canary-collinpfeifer.fly.dev`, mounted at the
+`/canary` path prefix so it can share `collinpfeifer.dev` with another app.
+
+Deploy updates:
+
+```bash
+flyctl deploy -a canary-collinpfeifer --remote-only
+```
+
+**Required for production:** set a `GITHUB_TOKEN` secret. Fly's shared outbound
+IP can't rely on GitHub's 60/hour unauthenticated limit, so investigations
+will fail without it. Create a classic token (no scopes needed for public
+repos) at <https://github.com/settings/tokens> and set it:
+
+```bash
+flyctl secrets set -a canary-collinpfeifer GITHUB_TOKEN=github_pat_xxx
+```
+
+(Other secrets — `OPENROUTER_API_KEY`, `BRAVE_SEARCH_API_KEY`, `OPENROUTER_MODEL`
+— are already set. Add or change any with the same `flyctl secrets set` command.)
+
+### Pointing collinpfeifer.dev/canary at the app
+
+Because the apex serves another app, add a reverse-proxy rule there that
+forwards `/canary/*` to the Fly app **preserving the path** (do not strip the
+prefix; the Next.js basePath `/canary` expects to receive it).
+
+**nginx:**
+
+```nginx
+location /canary/ {
+    proxy_pass https://canary-collinpfeifer.fly.dev;
+    proxy_set_header Host canary-collinpfeifer.fly.dev;
+    proxy_buffering off;   # required for SSE streaming progress
+}
+```
+
+**Caddy:**
+
+```caddyfile
+collinpfeifer.dev {
+    handle_path /canary/* {
+        reverse_proxy https://canary-collinpfeifer.fly.dev
+    }
+}
+```
+
+Note: if your proxy strips the prefix (like Caddy's `handle_path`), use the
+plain `handle /canary/* { reverse_proxy ... }` form instead so the `/canary`
+prefix reaches the app. The agent's progress uses Server-Sent Events, so
+disable response buffering on the proxy.
+
+### Other hosts
+
+Any Node host works (Vercel, Railway, a VPS). The investigation can take a
+minute or two on slow models, so allow a generous request timeout. For a path
+prefix, set `NEXT_PUBLIC_BASE_PATH` at build time; for a subdomain or root,
+set it to an empty string.
 
 ```bash
 bun run build
