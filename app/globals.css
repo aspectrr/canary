@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+/*
+ * Adcker-inspired palette: a single warm cream canvas, one near-black ink,
+ * one subtle veil for surface variation. No chromatic color, no shadows,
+ * no border radius. Hierarchy comes from type scale and whitespace.
+ */
+@theme {
+  --color-ink: #191919;
+  --color-bone: #efedea;
+  --color-stone: #e3e1de;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+html,
+body {
+  background: var(--color-bone);
+  color: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Slightly tighter defaults to echo the editorial type tuning. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
+}

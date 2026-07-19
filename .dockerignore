@@ -1,0 +1,15 @@
+# Keep the image lean and the build cache stable.
+node_modules
+.next
+.git
+.gitignore
+README.md
+.env*
+!.env.example
+Dockerfile
+.dockerignore
+fly.toml
+.pi
+.pi-lens
+*.md
+scripts

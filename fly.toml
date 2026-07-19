@@ -1,0 +1,29 @@
+# Canary — open-source safety investigator
+# Mounted at collinpfeifer.dev/canary via a reverse proxy on the apex.
+# The app itself runs at <app>.fly.dev; basePath /canary is baked in at build.
+
+app = "canary-collinpfeifer"
+primary_region = "iad"
+
+[build]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Auto-stop the machine when idle (saves the free quota); cold-start on a
+  # request adds a few seconds. Set min_machines_running=1 to keep one warm.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 100
+    soft_limit = 50
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  # 256MB (the free-tier default) risks OOM with Node + the agent loop.
+  # 512MB is safer; the extra 256MB costs only cents/month.
+  memory_mb = 512
