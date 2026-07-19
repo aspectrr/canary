@@ -60,11 +60,11 @@ export const AGENT_TOOLS = [
     function: {
       name: "github",
       description:
-        "Query the GitHub REST API for THIS repository only. Read specific files, issues, pull requests, releases, commits, or contributors. Pass a path like /repos/{owner}/{repo}/issues?state=open or /repos/{owner}/{repo}/contents/src/index.js. Returns JSON.",
+        "Query the GitHub REST API for THIS repository only. You can: read a file's contents (e.g. /repos/{owner}/{repo}/contents/npm/esbuild/package.json or /contents/src/index.js), list a directory (/contents/src), list open issues (/issues?state=open), read a single issue or its comments (/issues/123 or /issues/123/comments), list pull requests, releases, or commits. File contents are returned as readable text (base64 is decoded for you). Pass a path beginning with /repos/{owner}/{repo}/...",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "GitHub API path beginning with /repos/{owner}/{repo}/..." },
+          path: { type: "string", description: "GitHub API path beginning with /repos/{owner}/{repo}/... Use /contents/{path} to read a file or list a directory." },
         },
         required: ["path"],
       },
@@ -82,6 +82,46 @@ function hostOf(url: string): string {
   } catch {
     return url.slice(0, 40);
   }
+}
+
+/** Decode a GitHub contents response into readable text.
+ *  - A single file (encoding: base64) -> decoded file body, with a path header.
+ *  - A directory listing (array of entries) -> a compact name/type/path list.
+ *  - Anything else (issues, commits, etc.) -> JSON as-is. */
+function renderGithubResult(json: unknown): string {
+  // Directory listing: array of {name, type, path} entries.
+  if (Array.isArray(json) && json.length > 0 && typeof json[0] === "object" && "name" in json[0]) {
+    const rows = json.map((e: Record<string, unknown>) => {
+      const t = e.type === "dir" ? "[dir] " : e.type === "file" ? "[file]" : "";
+      return `${t} ${String(e.path ?? e.name ?? "")}`;
+    });
+    return `${json.length} entries:\n${rows.join("\n")}`;
+  }
+  // Single file with base64 content.
+  if (json && typeof json === "object") {
+    const o = json as Record<string, unknown>;
+    if (o.encoding === "base64" && typeof o.content === "string") {
+      const decoded = Buffer.from(o.content, "base64").toString("utf8");
+      const header = `# ${String(o.path ?? o.name ?? "file")} (${String(o.size ?? decoded.length)} bytes)`;
+      return `${header}\n\n${decoded}`;
+    }
+  }
+  return JSON.stringify(json);
+}
+
+/** Short summary for the evidence trail, e.g. "file: 2.1 KB" or "8 issues". */
+function githubResultSummary(json: unknown, path: string): string {
+  const seg = path.split("/").filter(Boolean).slice(2).join("/"); // after owner/repo
+  if (Array.isArray(json)) return `${json.length} item${json.length === 1 ? "" : "s"}`;
+  if (json && typeof json === "object") {
+    const o = json as Record<string, unknown>;
+    if (o.encoding === "base64") {
+      const kb = Math.max(1, Math.round(Number(o.size ?? 0) / 1024));
+      return `file: ${kb} KB`;
+    }
+    if (seg.includes("issues")) return "1 issue";
+  }
+  return "1 object";
 }
 
 /** Fetch a URL and return readable text: raw for text/json, stripped for HTML. */
@@ -157,10 +197,13 @@ export async function executeTool(
       case "github": {
         const path = String(args.path ?? "").slice(0, 300);
         const json = await fetchApiJson(ctx.owner, ctx.repo, path);
-        const brief =
-          Array.isArray(json) ? `${json.length} item${json.length === 1 ? "" : "s"}` : "1 object";
+        // GitHub's contents endpoint returns file bodies as base64. Decode it
+        // so the model gets readable text instead of an opaque blob, and so we
+        // don't blow the context budget on encoded data.
+        const rendered = renderGithubResult(json);
+        const brief = githubResultSummary(json, path);
         evidence.push({ action: "github", detail: path.split("?")[0].replace(/^\/repos\/[^/]+\/[^/]+/, "") || "/", summary: brief });
-        return cap(JSON.stringify(json));
+        return cap(rendered);
       }
       default:
         return `Unknown tool "${name}". Available: web_search, fetch_url, github.`;
